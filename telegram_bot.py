@@ -1,11 +1,7 @@
 import os
-import asyncio
 import json
 import time
 import threading
-import requests
-import fcntl  # For file locking on Unix systems
-import msvcrt  # For file locking on Windows
 import tempfile
 import platform
 from datetime import datetime

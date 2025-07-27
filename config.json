@@ -29,7 +29,7 @@
         "verbose_logging": false
     },
     "telegram": {
-        "bot_token": "",
+        "bot_token": "8028132470:AAFMfGnKtoI5tKIduZb3DFtArTYSQjpAzcE",
         "max_file_size_mb": 10,
         "max_phone_numbers": 10000000
     }
