@@ -675,7 +675,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"🆔 *Job ID:* {job_id}\n"
             f"{processing_info}"
             f"🚀 Starting processing now...\n"
-            f"⏰ Estimated time: {len(phone_numbers) * 5 // 60 + 1} minutes\n\n"
+            # f"⏰ Estimated time: {len(phone_numbers) * 5 // 60 + 1} minutes\n\n"
             f"I'll notify you when the processing is complete!"
         )
         
