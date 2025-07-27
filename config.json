@@ -1,0 +1,36 @@
+{
+    "multiprocessing": {
+        "enabled": true,
+        "max_workers": 10,
+        "phones_per_worker": 100
+    },
+    "browser": {
+        "headless": true,
+        "timeout": 30,
+        "delay_between_phones": 1
+    },
+    "proxy": {
+        "use_rotating_proxies": true,
+        "proxy_file": "proxies.txt",
+        "rotation": {
+            "min_requests": 20,
+            "max_requests": 30,
+            "per_worker": true
+        }
+    },
+    "files": {
+        "phone_numbers_file": "results/phone_numbers.txt",
+        "output_file": "results/downloadable.txt",
+        "create_backup": false,
+        "save_results": true
+    },
+    "debug": {
+        "enable_screenshots": false,
+        "verbose_logging": false
+    },
+    "telegram": {
+        "bot_token": "",
+        "max_file_size_mb": 10,
+        "max_phone_numbers": 10000000
+    }
+}
