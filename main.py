@@ -146,7 +146,11 @@ def create_proxy_auth_extension(proxy_info, worker_id=0):
         print(f"[Worker {worker_id}] No proxy info provided - creating extension without proxy")
         return None
     
-    directory_name = f"proxy_auth_extension_worker_{worker_id}"
+    # Create proxy_files directory if it doesn't exist
+    proxy_files_dir = os.path.join(BASE_PATH, "proxy_files")
+    os.makedirs(proxy_files_dir, exist_ok=True)
+    
+    directory_name = os.path.join(proxy_files_dir, f"proxy_auth_extension_worker_{worker_id}")
     
     manifest_json = """
     {
@@ -681,7 +685,16 @@ def process_phone_batch(phone_batch, worker_id, config):
         try:
             import shutil
             shutil.rmtree(extension_dir)
-            print(f"[Worker {worker_id}] Cleaned up proxy extension directory: {extension_dir}")
+            print(f"[Worker {worker_id}] Cleaned up proxy extension directory: {os.path.basename(extension_dir)}")
+            
+            # Try to remove proxy_files directory if empty
+            proxy_files_dir = os.path.join(BASE_PATH, "proxy_files")
+            try:
+                if os.path.exists(proxy_files_dir) and not os.listdir(proxy_files_dir):
+                    os.rmdir(proxy_files_dir)
+                    print(f"[Worker {worker_id}] Removed empty proxy_files directory")
+            except:
+                pass  # Directory not empty or other issue, ignore
         except Exception as e:
             print(f"[Worker {worker_id}] Could not clean up extension directory: {e}")
     
@@ -690,6 +703,9 @@ def process_phone_batch(phone_batch, worker_id, config):
 
 # Thread-safe file writing
 file_lock = threading.Lock()
+
+# Export file_lock for use by other modules (telegram_bot.py)
+__all__ = ['main', 'load_config', 'get_base_path', 'file_lock', 'process_phone_batch', 'save_result_to_file']
 
 def save_result_to_file(result, config):
     """Thread-safe function to save results to file"""
@@ -737,9 +753,25 @@ def save_result_to_file(result, config):
         except Exception as e:
             print(f"[Worker {worker_id}] Error saving result for {phone_number} to {config['files']['output_file']}: {e}")
 
+def cleanup_proxy_files_on_startup():
+    """Clean up any leftover proxy extension files from previous runs"""
+    try:
+        import shutil
+        proxy_files_dir = os.path.join(BASE_PATH, "proxy_files")
+        if os.path.exists(proxy_files_dir):
+            shutil.rmtree(proxy_files_dir)
+            print(f"🧹 Cleaned up leftover proxy_files directory from previous run")
+        os.makedirs(proxy_files_dir, exist_ok=True)
+        print(f"📁 Created fresh proxy_files directory: {proxy_files_dir}")
+    except Exception as e:
+        print(f"⚠️ Warning: Could not clean up proxy_files directory: {e}")
+
 def main():
     """Main execution function"""
     print("🚀 Starting Doctolib Bot with Multiprocessing Support")
+    
+    # Clean up any leftover proxy files from previous runs
+    cleanup_proxy_files_on_startup()
     
     # Load configuration
     config = load_config()
@@ -889,16 +921,29 @@ def main():
         import shutil
         import glob
         
-        extension_dirs = glob.glob(os.path.join(BASE_PATH, "proxy_auth_extension_worker_*"))
-        for ext_dir in extension_dirs:
+        # Clean up proxy extension directories in the proxy_files folder
+        proxy_files_dir = os.path.join(BASE_PATH, "proxy_files")
+        if os.path.exists(proxy_files_dir):
+            extension_dirs = glob.glob(os.path.join(proxy_files_dir, "proxy_auth_extension_worker_*"))
+            for ext_dir in extension_dirs:
+                try:
+                    shutil.rmtree(ext_dir)
+                    print(f"   Cleaned up: {os.path.basename(ext_dir)}")
+                except Exception as e:
+                    print(f"   Could not clean up {os.path.basename(ext_dir)}: {e}")
+            
+            # Remove proxy_files directory if empty
             try:
-                shutil.rmtree(ext_dir)
-                print(f"   Cleaned up: {os.path.basename(ext_dir)}")
-            except Exception as e:
-                print(f"   Could not clean up {os.path.basename(ext_dir)}: {e}")
-        
-        if not extension_dirs:
-            print("   No proxy extension directories to clean up")
+                if not os.listdir(proxy_files_dir):
+                    os.rmdir(proxy_files_dir)
+                    print(f"   Removed empty proxy_files directory")
+            except:
+                pass
+            
+            if not extension_dirs:
+                print("   No proxy extension directories to clean up")
+        else:
+            print("   No proxy_files directory found")
     except Exception as e:
         print(f"   Error during cleanup: {e}")
 

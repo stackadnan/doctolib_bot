@@ -1,8 +1,8 @@
 {
     "multiprocessing": {
         "enabled": true,
-        "max_workers": 10,
-        "phones_per_worker": 100
+        "max_workers": 3,
+        "phones_per_worker": 10
     },
     "browser": {
         "headless": true,

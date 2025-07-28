@@ -1,5 +1,4 @@
-DrissionPage>=4.0.0
 python-telegram-bot>=20.0
-asyncio
-threading
-requests
+DrissionPage>=4.0.0
+requests>=2.25.0
+psutil>=5.8.0

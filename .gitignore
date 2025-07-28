@@ -1,0 +1,41 @@
+# Temporary proxy extension files
+proxy_files/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Results and temporary files
+results/
+*.txt
+!requirements.txt
+
+# Config backups and temporary configs
+config_backup_*.json
+config_temp_*.json
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files
+.env
+.venv/
+venv/
+
+# Logs
+*.log

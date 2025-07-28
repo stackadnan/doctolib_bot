@@ -1,9 +1,4 @@
-import os
-import json
-import time
-import threading
-import tempfile
-import platform
+import os,json,time,threading,tempfile,platform
 from datetime import datetime
 from telegram import Update, Document
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -12,74 +7,27 @@ import tempfile
 import shutil
 from main import main as run_doctolib_bot, load_config, get_base_path
 
-# Global file lock for config operations
-config_file_lock = threading.Lock()
+# Import shared locks from main.py to avoid conflicts
+try:
+    from main import file_lock as shared_file_lock
+except ImportError:
+    # Fallback if main.py doesn't have the lock exported
+    shared_file_lock = threading.Lock()
 
-def safe_config_operation(job_id, config, operation_func):
-    """Safely perform config file operations with proper locking"""
-    config_file_path = os.path.join(BASE_PATH, 'config.json')
-    backup_file_path = os.path.join(BASE_PATH, f'config_backup_{job_id}.json')
-    temp_config_path = os.path.join(BASE_PATH, f'config_temp_{job_id}.json')
-    
-    with config_file_lock:
-        try:
-            # Create backup of original config
-            shutil.copy2(config_file_path, backup_file_path)
-            
-            # Create temporary config for this job
-            with open(temp_config_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=4)
-            
-            # Atomically replace the config file
-            if platform.system() == "Windows":
-                # On Windows, we need to remove the target file first
-                if os.path.exists(config_file_path):
-                    os.remove(config_file_path)
-                shutil.move(temp_config_path, config_file_path)
-            else:
-                # On Unix systems, move is atomic
-                shutil.move(temp_config_path, config_file_path)
-            
-            try:
-                # Run the operation
-                result = operation_func()
-                return result
-            finally:
-                # Always restore the original config
-                if os.path.exists(backup_file_path):
-                    if platform.system() == "Windows":
-                        if os.path.exists(config_file_path):
-                            os.remove(config_file_path)
-                        shutil.move(backup_file_path, config_file_path)
-                    else:
-                        shutil.move(backup_file_path, config_file_path)
-                
-        except Exception as e:
-            # Restore backup if something went wrong
-            try:
-                if os.path.exists(backup_file_path):
-                    if platform.system() == "Windows":
-                        if os.path.exists(config_file_path):
-                            os.remove(config_file_path)
-                        shutil.move(backup_file_path, config_file_path)
-                    else:
-                        shutil.move(backup_file_path, config_file_path)
-            except:
-                pass
-            raise e
-        finally:
-            # Clean up temporary files
-            for temp_file in [temp_config_path, backup_file_path]:
-                try:
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                except:
-                    pass
+# Global file lock for config operations - use shared lock
+config_file_lock = shared_file_lock
+
+# Note: Removed unsafe safe_config_operation function that manipulated config.json
+# Now using parameter-based configuration passing to avoid race conditions
 
 # Global variables for job tracking
 active_jobs = {}
 job_counter = 0
 job_lock = threading.Lock()
+
+# Process termination support
+job_termination_flags = {}  # job_id -> threading.Event()
+job_processes = {}  # job_id -> list of process objects or browser instances
 
 # Job cleanup configuration
 MAX_ACTIVE_JOBS = 50  # Maximum number of jobs to keep in memory
@@ -139,6 +87,36 @@ def schedule_job_cleanup():
 
 BASE_PATH = get_base_path()
 
+def ensure_proxy_config_compatibility(config):
+    """Ensure proxy configuration has all required fields for main.py compatibility"""
+    if 'proxy' not in config:
+        config['proxy'] = {}
+    
+    # Set default proxy configuration if missing
+    proxy_defaults = {
+        'use_rotating_proxies': False,
+        'proxy_file': 'proxies.txt',
+        'rotation': {
+            'min_requests': 20,
+            'max_requests': 30,
+            'per_worker': True
+        },
+        'username': '',
+        'password': '',
+        'host': '',
+        'port': ''
+    }
+    
+    for key, value in proxy_defaults.items():
+        if key not in config['proxy']:
+            config['proxy'][key] = value
+    
+    # Ensure rotation sub-config exists
+    if 'rotation' not in config['proxy']:
+        config['proxy']['rotation'] = proxy_defaults['rotation']
+    
+    return config
+
 def load_telegram_config():
     """Load Telegram bot configuration"""
     config_path = os.path.join(BASE_PATH, 'config.json')
@@ -179,6 +157,98 @@ def send_simple_message(chat_id, text, bot_application):
             print(f"Failed to send message: {response.status_code}")
     except Exception as e:
         print(f"Error sending message: {e}")
+
+def send_partial_results_message_sync(chat_id, job_id, output_file, bot_application):
+    """Send partial results message when job is stopped"""
+    try:
+        import requests
+        
+        # Read statistics from output file
+        with open(output_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        if not lines:
+            send_simple_message(chat_id, f"🛑 Job {job_id} was stopped but no results were processed yet.", bot_application)
+            return
+        
+        # Parse and categorize phone numbers
+        registered_numbers = []
+        not_registered_numbers = []
+        failed_numbers = []
+        unknown_numbers = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Extract phone number from the line (before the first space or dash)
+            parts = line.split(' - ')
+            if len(parts) >= 2:
+                phone_number = parts[0].strip()
+                status = parts[1].strip().lower()
+                
+                if "registered" in status and "not registered" not in status:
+                    registered_numbers.append(phone_number)
+                elif "not registered" in status:
+                    not_registered_numbers.append(phone_number)
+                elif "failed to process" in status:
+                    failed_numbers.append(phone_number)
+                else:
+                    unknown_numbers.append(phone_number)
+            else:
+                # If format is unexpected, try to extract just the phone number
+                phone_number = line.split()[0] if line.split() else line
+                unknown_numbers.append(phone_number)
+        
+        # Calculate processing info
+        total_requested = len(active_jobs[job_id]['phone_numbers']) if job_id in active_jobs else 0
+        processed_count = len(lines)
+        progress = (processed_count / total_requested * 100) if total_requested > 0 else 0
+        
+        duration = "Unknown"
+        if job_id in active_jobs and 'start_time' in active_jobs[job_id] and 'end_time' in active_jobs[job_id]:
+            duration_seconds = (active_jobs[job_id]['end_time'] - active_jobs[job_id]['start_time']).total_seconds()
+            duration = f"{duration_seconds:.1f} seconds"
+        
+        summary_text = (
+            f"🛑 Job {job_id} Stopped!\n\n"
+            f"📊 Partial Results Summary:\n"
+            f"📈 Progress: {processed_count}/{total_requested} ({progress:.1f}%)\n\n"
+            f"📱 Processed Numbers:\n"
+            f"• Already Registered: {len(registered_numbers)}\n"
+            f"• Not Registered: {len(not_registered_numbers)}\n"
+            f"• Failed to Process: {len(failed_numbers)}\n"
+            f"• Unknown Status: {len(unknown_numbers)}\n\n"
+            f"⏱ Processing Time: {duration}\n"
+            f"🔄 All Chrome instances have been closed\n\n"
+            f"📎 Download your partial results below:"
+        )
+        
+        # Send summary message
+        bot_token = bot_application.bot.token
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = {
+            'chat_id': chat_id,
+            'text': summary_text
+        }
+        response = requests.post(url, data=data, timeout=10)
+        
+        # Send the partial results file
+        url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+        with open(output_file, 'rb') as f:
+            files = {'document': f}
+            data = {
+                'chat_id': chat_id,
+                'caption': f"🛑 Partial results for stopped job {job_id} ({processed_count}/{total_requested} processed)"
+            }
+            requests.post(url, files=files, data=data, timeout=30)
+            
+        print(f"Partial results sent successfully for stopped job {job_id}")
+            
+    except Exception as e:
+        print(f"Error sending partial results message for job {job_id}: {e}")
+        send_simple_message(chat_id, f"🛑 Job {job_id} was stopped, but there was an error sending the partial results.", bot_application)
 
 def send_completion_message_sync(chat_id, job_id, output_file, bot_application):
     """Send completion message with file using direct HTTP requests"""
@@ -300,10 +370,148 @@ def send_completion_message_sync(chat_id, job_id, output_file, bot_application):
         print(f"Error sending completion message for job {job_id}: {e}")
         send_simple_message(chat_id, f"✅ Job {job_id} completed, but there was an error sending the results file.", bot_application)
 
+def validate_main_dependencies():
+    """Validate that all required functions from main.py are available"""
+    try:
+        from main import process_phone_batch, save_result_to_file, file_lock
+        return True
+    except ImportError as e:
+        print(f"❌ Error importing required functions from main.py: {e}")
+        return False
+
+def process_phone_batch_with_termination(phone_batch, worker_id, config, job_id):
+    """Process a batch of phone numbers with termination support"""
+    try:
+        # Import the function from main.py but with termination checking
+        import concurrent.futures
+        import time
+        
+        print(f"[Worker {worker_id}] Starting batch processing for job {job_id}")
+        
+        # Check if termination was requested before starting
+        if job_id in job_termination_flags and job_termination_flags[job_id].is_set():
+            print(f"[Worker {worker_id}] Job {job_id} termination requested before starting")
+            return []
+        
+        # Use the original function but with periodic termination checks
+        from main import process_phone_batch
+        
+        # We'll need to modify this to support termination
+        # For now, let's create a simple version that processes one phone at a time
+        # and checks for termination between each phone
+        
+        results = []
+        for i, phone in enumerate(phone_batch):
+            # Check for termination before processing each phone
+            if job_id in job_termination_flags and job_termination_flags[job_id].is_set():
+                print(f"[Worker {worker_id}] Job {job_id} termination requested, stopping at phone {i+1}/{len(phone_batch)}")
+                break
+            
+            # Process single phone (we'll need to modify main.py to support this)
+            try:
+                # For now, call the batch function with single phone
+                single_result = process_phone_batch([phone], worker_id, config)
+                results.extend(single_result)
+                
+                # Small delay and termination check
+                time.sleep(0.1)
+                if job_id in job_termination_flags and job_termination_flags[job_id].is_set():
+                    print(f"[Worker {worker_id}] Job {job_id} termination requested after processing phone {i+1}")
+                    break
+                    
+            except Exception as e:
+                print(f"[Worker {worker_id}] Error processing phone {phone}: {e}")
+                # Add failed result
+                results.append({
+                    'phone_number': phone,
+                    'success': False,
+                    'status': None,
+                    'worker_id': worker_id,
+                    'index': i
+                })
+        
+        print(f"[Worker {worker_id}] Completed batch processing for job {job_id} - processed {len(results)} phones")
+        return results
+        
+    except Exception as e:
+        print(f"[Worker {worker_id}] Error in terminable batch processing: {e}")
+        return []
+
+def terminate_job_processes(job_id):
+    """Terminate all processes/browsers for a specific job"""
+    try:
+        print(f"🛑 Terminating processes for job {job_id}")
+        
+        # Set termination flag
+        if job_id in job_termination_flags:
+            job_termination_flags[job_id].set()
+        
+        # Kill any browser processes (this is a fallback - browsers should close gracefully)
+        try:
+            import psutil
+            import subprocess
+            
+            # Kill Chrome processes that might be stuck
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['name'] and 'chrome' in proc.info['name'].lower():
+                        # Check if it's related to our worker
+                        if proc.info['cmdline']:
+                            cmdline = ' '.join(proc.info['cmdline'])
+                            if f'proxy_auth_extension_worker_' in cmdline:
+                                print(f"🔍 Found Chrome process: {proc.info['pid']}")
+                                proc.terminate()
+                                proc.wait(timeout=3)
+                                print(f"✅ Terminated Chrome process: {proc.info['pid']}")
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+                    pass
+        except ImportError:
+            print("⚠️ psutil not available - cannot force-kill Chrome processes")
+            # Fallback: use taskkill on Windows
+            try:
+                import subprocess
+                subprocess.run(["taskkill", "/f", "/im", "chrome.exe"], capture_output=True)
+                print("🔧 Used taskkill as fallback to close Chrome")
+            except:
+                print("⚠️ Could not force-close Chrome processes")
+        
+        # Clean up proxy files for this job
+        try:
+            import shutil
+            proxy_files_dir = os.path.join(BASE_PATH, "proxy_files")
+            if os.path.exists(proxy_files_dir):
+                for item in os.listdir(proxy_files_dir):
+                    if f"worker_" in item:
+                        item_path = os.path.join(proxy_files_dir, item)
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
+                            print(f"🧹 Cleaned up proxy extension: {item}")
+        except Exception as e:
+            print(f"⚠️ Error cleaning proxy files: {e}")
+        
+        print(f"✅ Process termination completed for job {job_id}")
+        
+    except Exception as e:
+        print(f"❌ Error terminating job processes: {e}")
+
+def process_doctolib_job_with_config(phone_batch, worker_id, config, job_id):
+    """Process a batch of phone numbers with custom config - wrapper for main.py function"""
+    # Import the process_phone_batch function from main.py
+    from main import process_phone_batch
+    return process_phone_batch(phone_batch, worker_id, config)
+
 def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_application):
     """Run the Doctolib bot processing in a separate thread"""
     try:
         print(f"Starting job {job_id} for user {user_id}")
+        
+        # Validate main.py dependencies first
+        if not validate_main_dependencies():
+            raise Exception("Required dependencies from main.py are not available")
+        
+        # Create termination flag for this job
+        job_termination_flags[job_id] = threading.Event()
+        job_processes[job_id] = []
         
         # Update job status
         active_jobs[job_id]['status'] = 'processing'
@@ -332,8 +540,11 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
         
         send_start_message()
         
-        # Temporarily replace the phone numbers file
+        # Load base config without modifying the global config file
         config = load_config()
+        
+        # Ensure proxy configuration compatibility
+        config = ensure_proxy_config_compatibility(config)
         
         # Print multiprocessing configuration that will be used
         phone_count = len(active_jobs[job_id]['phone_numbers'])
@@ -363,26 +574,104 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
         # Copy user's phone numbers to job-specific file
         shutil.copy2(phone_numbers_file, job_phone_file)
         
-        # Update config to use job-specific files
+        # Create job-specific config without modifying global config
         job_config = config.copy()
         job_config['files']['phone_numbers_file'] = f"results/phone_numbers_{job_id}.txt"
         job_config['files']['output_file'] = f"results/downloadable_{job_id}.txt"
         
-        # Use safe config operation
-        def run_bot():
-            return run_doctolib_bot()
+        # Run processing with job-specific configuration
+        phone_numbers = active_jobs[job_id]['phone_numbers']
         
-        safe_config_operation(job_id, job_config, run_bot)
+        # Process using the same logic as main.py but with isolated config and termination support
+        if job_config['multiprocessing']['enabled']:
+            import concurrent.futures
+            
+            # Split phone numbers into batches
+            phones_per_worker = job_config['multiprocessing']['phones_per_worker']
+            phone_batches = [phone_numbers[i:i+phones_per_worker] for i in range(0, len(phone_numbers), phones_per_worker)]
+            
+            print(f"📦 Split {len(phone_numbers)} phone numbers into {len(phone_batches)} batches")
+            
+            # Clear the output file at the start
+            with shared_file_lock:
+                try:
+                    with open(job_output_file, 'w', encoding='utf-8') as f:
+                        f.write("")  # Clear the file
+                    print(f"Cleared {job_output_file} for fresh start")
+                except Exception as e:
+                    print(f"Could not clear {job_output_file}: {e}")
+            
+            # Process batches using ThreadPoolExecutor with termination support
+            with concurrent.futures.ThreadPoolExecutor(max_workers=job_config['multiprocessing']['max_workers']) as executor:
+                # Submit all batches with termination support
+                future_to_batch = {
+                    executor.submit(process_phone_batch_with_termination, batch, i, job_config, job_id): i 
+                    for i, batch in enumerate(phone_batches)
+                }
+                
+                # Process completed futures and save results
+                completed_batches = 0
+                total_batches = len(phone_batches)
+                
+                for future in concurrent.futures.as_completed(future_to_batch):
+                    batch_id = future_to_batch[future]
+                    
+                    # Check if termination was requested
+                    if job_id in job_termination_flags and job_termination_flags[job_id].is_set():
+                        print(f"🛑 Job {job_id} termination detected, canceling remaining batches")
+                        # Cancel remaining futures
+                        for f in future_to_batch:
+                            if not f.done():
+                                f.cancel()
+                        break
+                    
+                    try:
+                        worker_results = future.result(timeout=5)  # 5 second timeout for getting results
+                        completed_batches += 1
+                        print(f"✅ Batch {batch_id + 1}/{total_batches} completed with {len(worker_results)} results")
+                        
+                        # Save results to job-specific file
+                        from main import save_result_to_file
+                        for result in worker_results:
+                            save_result_to_file(result, job_config)
+                            
+                    except concurrent.futures.TimeoutError:
+                        print(f"⏰ Batch {batch_id + 1} timed out")
+                    except Exception as exc:
+                        print(f"❌ Batch {batch_id + 1} generated an exception: {exc}")
+                
+                # Check if job was terminated
+                was_terminated = job_id in job_termination_flags and job_termination_flags[job_id].is_set()
+                if was_terminated:
+                    print(f"🛑 Job {job_id} was terminated by user. Processed {completed_batches}/{total_batches} batches")
+                    active_jobs[job_id]['status'] = 'stopped'
+                    active_jobs[job_id]['error'] = f'Stopped by user - processed {completed_batches}/{total_batches} batches'
+                else:
+                    print(f"✅ Job {job_id} completed normally. Processed {completed_batches}/{total_batches} batches")
+        else:
+            print("Single-process mode not implemented in this version. Please enable multiprocessing in config.json")
+            raise Exception("Single-process mode not supported")
         
-        # Update job status
-        active_jobs[job_id]['status'] = 'completed'
+        # Update job status based on completion or termination
+        was_terminated = job_id in job_termination_flags and job_termination_flags[job_id].is_set()
+        
+        if not was_terminated and job_id in active_jobs and active_jobs[job_id]['status'] != 'stopped':
+            active_jobs[job_id]['status'] = 'completed'
+        
         active_jobs[job_id]['end_time'] = datetime.now()
         active_jobs[job_id]['output_file'] = job_output_file
         
-        # Check if output file was created
+        # Terminate any remaining processes
+        terminate_job_processes(job_id)
+        
+        # Check if output file was created and send appropriate message
         if os.path.exists(job_output_file):
-            # Send completion message with file
-            send_completion_message_sync(chat_id, job_id, job_output_file, bot_application)
+            if was_terminated or active_jobs[job_id]['status'] == 'stopped':
+                # Send partial results message
+                send_partial_results_message_sync(chat_id, job_id, job_output_file, bot_application)
+            else:
+                # Send completion message with file
+                send_completion_message_sync(chat_id, job_id, job_output_file, bot_application)
         else:
             # Send error message
             send_simple_message(chat_id, f"❌ Job {job_id} completed but no output file was generated.\n"
@@ -393,14 +682,36 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
         
     except Exception as e:
         print(f"Error in job {job_id}: {e}")
-        active_jobs[job_id]['status'] = 'failed'
-        active_jobs[job_id]['error'] = str(e)
         
-        # Send error message
-        send_simple_message(chat_id, f"❌ Job {job_id} failed with error:\n{str(e)}", bot_application)
+        # Terminate processes in case of error
+        terminate_job_processes(job_id)
+        
+        # Check if it was a user termination or actual error
+        was_terminated = job_id in job_termination_flags and job_termination_flags[job_id].is_set()
+        
+        if was_terminated:
+            # Don't mark as failed if user requested termination
+            if job_id in active_jobs:
+                active_jobs[job_id]['status'] = 'stopped'
+                active_jobs[job_id]['error'] = 'Stopped by user request'
+        else:
+            # Actual error occurred
+            if job_id in active_jobs:
+                active_jobs[job_id]['status'] = 'failed'
+                active_jobs[job_id]['error'] = str(e)
+            
+            # Send error message
+            send_simple_message(chat_id, f"❌ Job {job_id} failed with error:\n{str(e)}", bot_application)
         
         # Cleanup temporary files
         cleanup_job_files(job_id)
+    
+    finally:
+        # Always clean up termination flags and process references
+        if job_id in job_termination_flags:
+            del job_termination_flags[job_id]
+        if job_id in job_processes:
+            del job_processes[job_id]
 
 async def send_completion_message(chat_id, job_id, output_file, bot_application):
     """Send completion message with the result file"""
@@ -459,9 +770,8 @@ def cleanup_job_files(job_id):
     try:
         files_to_cleanup = [
             os.path.join(BASE_PATH, "results", f"phone_numbers_{job_id}.txt"),
-            os.path.join(BASE_PATH, "results", f"downloadable_{job_id}.txt"),
-            os.path.join(BASE_PATH, f"config_backup_{job_id}.json"),
-            os.path.join(BASE_PATH, f"config_temp_{job_id}.json")
+            os.path.join(BASE_PATH, "results", f"downloadable_{job_id}.txt")
+            # Removed config backup files since we no longer use unsafe config manipulation
         ]
         
         for file_path in files_to_cleanup:
@@ -488,6 +798,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "📁 *Commands:*\n"
         "• /start - Show this welcome message\n"
         "• /status - Check current job status\n"
+        "• /download - Download current/partial results\n"
+        "• /stop - Stop running job process\n"
         "• /help - Get detailed help\n\n"
         "📤 *Ready to start? Send me your phone_numbers.txt file!*"
     )
@@ -520,12 +832,153 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "  - ❓ Unknown Status\n"
         "  - ⚠️ Failed to Process\n\n"
         "*Limits:*\n"
-        "• Maximum 100 phone numbers per request\n"
+        "• Maximum 20000000 phone numbers per request\n"
         "• One job at a time per user\n\n"
+        "*Commands:*\n"
+        "• `/start` - Show welcome message\n"
+        "• `/status` - Check job status and progress\n"
+        "• `/download` - Get current results (even if job is still running)\n"
+        "• `/stop` - Stop your running job and get partial results\n"
+        "• `/help` - Show this help message\n\n"
         "Need more help? Contact support."
     )
     
     await update.message.reply_text(help_message, parse_mode=ParseMode.MARKDOWN)
+
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /stop command"""
+    user_id = update.effective_user.id
+    
+    # Find user's active jobs
+    user_active_jobs = [job for job_id, job in active_jobs.items() 
+                       if job['user_id'] == user_id and job['status'] in ['waiting', 'processing']]
+    
+    if not user_active_jobs:
+        await update.message.reply_text("📭 You have no active jobs to stop.")
+        return
+    
+    stopped_jobs = []
+    for job in user_active_jobs:
+        job_id = job['job_id']
+        
+        # Set termination flag
+        if job_id in job_termination_flags:
+            job_termination_flags[job_id].set()
+            print(f"🛑 Termination requested for job {job_id}")
+        
+        # Mark job as failed with stop reason
+        active_jobs[job_id]['status'] = 'stopped'
+        active_jobs[job_id]['end_time'] = datetime.now()
+        active_jobs[job_id]['error'] = 'Stopped by user request'
+        
+        stopped_jobs.append(job_id)
+    
+    if len(stopped_jobs) == 1:
+        await update.message.reply_text(
+            f"🛑 *Job {stopped_jobs[0]} Stop Requested*\n\n"
+            "⏳ The job is being terminated...\n"
+            "🔄 Chrome instances are being closed...\n"
+            "📁 You'll receive any partial results shortly.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        job_list = '\n'.join([f"• {job_id}" for job_id in stopped_jobs])
+        await update.message.reply_text(
+            f"🛑 *Stop Requested for {len(stopped_jobs)} Jobs*\n\n"
+            f"{job_list}\n\n"
+            "⏳ All jobs are being terminated...\n"
+            "🔄 Chrome instances are being closed...\n"
+            "📁 You'll receive any partial results shortly.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /download command to get partial results"""
+    user_id = update.effective_user.id
+    
+    # Find user's jobs (including active ones)
+    user_jobs = [job for job_id, job in active_jobs.items() if job['user_id'] == user_id]
+    
+    if not user_jobs:
+        await update.message.reply_text("📭 You have no jobs to download results from.")
+        return
+    
+    # Find the most recent job
+    recent_job = max(user_jobs, key=lambda x: x.get('created_time', datetime.min))
+    job_id = recent_job['job_id']
+    
+    # Check if there's a partial or complete output file
+    job_output_file = os.path.join(BASE_PATH, "results", f"downloadable_{job_id}.txt")
+    
+    if not os.path.exists(job_output_file):
+        await update.message.reply_text(
+            f"📄 No results file found for job {job_id}.\n"
+            "The processing may not have started yet or no results have been generated."
+        )
+        return
+    
+    try:
+        # Read the current results
+        with open(job_output_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        if not lines:
+            await update.message.reply_text(
+                f"📄 Results file for job {job_id} is empty.\n"
+                "Processing may have just started."
+            )
+            return
+        
+        # Parse results for summary
+        registered_count = sum(1 for line in lines if "registered" in line.lower() and "not registered" not in line.lower())
+        not_registered_count = sum(1 for line in lines if "not registered" in line.lower())
+        failed_count = sum(1 for line in lines if "failed to process" in line.lower())
+        
+        status = recent_job['status']
+        if status == 'processing':
+            status_text = "🔄 In Progress"
+        elif status == 'completed':
+            status_text = "✅ Completed"
+        elif status == 'stopped':
+            status_text = "🛑 Stopped"
+        elif status == 'failed':
+            status_text = "❌ Failed"
+        else:
+            status_text = f"❓ {status.title()}"
+        
+        total_phones = len(recent_job['phone_numbers'])
+        processed_count = len(lines)
+        progress = (processed_count / total_phones * 100) if total_phones > 0 else 0
+        
+        summary_text = (
+            f"📊 *Download Results - Job {job_id}*\n\n"
+            f"🎯 *Status:* {status_text}\n"
+            f"📈 *Progress:* {processed_count}/{total_phones} ({progress:.1f}%)\n\n"
+            f"📊 *Current Results:*\n"
+            f"• ✅ Registered: {registered_count}\n"
+            f"• ❌ Not Registered: {not_registered_count}\n"
+            f"• ⚠️ Failed: {failed_count}\n\n"
+            f"📎 *Downloading current results...*"
+        )
+        
+        # Send summary
+        await update.message.reply_text(summary_text, parse_mode=ParseMode.MARKDOWN)
+        
+        # Send the file
+        with open(job_output_file, 'rb') as f:
+            filename = f"doctolib_partial_{job_id}.txt" if status == 'processing' else f"doctolib_results_{job_id}.txt"
+            await update.message.reply_document(
+                document=f,
+                filename=filename,
+                caption=f"📄 Results for job {job_id} ({status_text})"
+            )
+        
+    except Exception as e:
+        print(f"Error in download command: {e}")
+        await update.message.reply_text(
+            f"❌ Error downloading results: {str(e)}",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /status command"""
@@ -733,8 +1186,36 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception:
             pass  # If we can't send the error message, just continue
 
+def cleanup_proxy_files_on_startup():
+    """Clean up any leftover proxy extension files from previous runs"""
+    try:
+        import shutil
+        proxy_files_dir = os.path.join(BASE_PATH, "proxy_files")
+        if os.path.exists(proxy_files_dir):
+            shutil.rmtree(proxy_files_dir)
+            print(f"🧹 Cleaned up leftover proxy_files directory from previous run")
+        os.makedirs(proxy_files_dir, exist_ok=True)
+        print(f"📁 Created fresh proxy_files directory for bot operations")
+        
+        # Also clean up any leftover termination flags and process references
+        global job_termination_flags, job_processes
+        job_termination_flags.clear()
+        job_processes.clear()
+        print(f"🧹 Cleared leftover job termination flags and process references")
+        
+    except Exception as e:
+        print(f"⚠️ Warning: Could not clean up proxy_files directory: {e}")
+
 def main():
     """Main function to run the Telegram bot"""
+    # Validate dependencies first
+    if not validate_main_dependencies():
+        print("❌ Cannot start Telegram bot - required dependencies missing")
+        return
+    
+    # Clean up any leftover proxy files from previous runs
+    cleanup_proxy_files_on_startup()
+    
     # Load Telegram configuration
     telegram_config = load_telegram_config()
     if not telegram_config or 'bot_token' not in telegram_config:
@@ -751,6 +1232,7 @@ def main():
     
     print("🤖 Starting Telegram Bot...")
     print(f"📂 Base path: {BASE_PATH}")
+    print("✅ All dependencies validated successfully")
     
     # Start job cleanup scheduler
     schedule_job_cleanup()
@@ -765,6 +1247,8 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("download", download_command))
+    application.add_handler(CommandHandler("stop", stop_command))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
