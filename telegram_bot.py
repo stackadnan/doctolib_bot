@@ -665,6 +665,9 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
         # Copy user's phone numbers to job-specific file
         shutil.copy2(phone_numbers_file, job_phone_file)
         
+        # Get phone numbers for this job
+        phone_numbers = active_jobs[job_id]['phone_numbers']
+        
         # Create job-specific config without modifying global config
         job_config = config.copy()
         job_config['files']['phone_numbers_file'] = f"results/phone_numbers_{job_id}.txt"
@@ -704,9 +707,6 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
         print(f"   Output file: {job_output_file}")
         print(f"   Config output: {job_config['files']['output_file']}")
         print(f"   Full output path: {os.path.join(BASE_PATH, job_config['files']['output_file'])}")
-        
-        # Run processing with job-specific configuration
-        phone_numbers = active_jobs[job_id]['phone_numbers']
         
         # Process using the same logic as main.py but with isolated config and termination support
         if job_config['multiprocessing']['enabled']:
