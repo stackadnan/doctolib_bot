@@ -114,9 +114,9 @@ def calculate_optimal_workers_and_batch_size(total_phone_numbers):
     
     # Define scaling rules based on total phone numbers
     if total_phone_numbers <= 100:
-        # Small datasets: 1-10 workers, 10-20 phones per worker
-        workers = min(10, max(1, total_phone_numbers // 10))
-        phones_per_worker = max(10, total_phone_numbers // workers)
+        # Small datasets: 1 worker only
+        workers = 1
+        phones_per_worker = total_phone_numbers
     elif total_phone_numbers <= 1000:
         # Medium datasets: 10-50 workers, 20-50 phones per worker
         workers = min(50, max(10, total_phone_numbers // 20))
@@ -130,7 +130,6 @@ def calculate_optimal_workers_and_batch_size(total_phone_numbers):
         workers = min(130, max(100, total_phone_numbers // 750))
         phones_per_worker = max(500, total_phone_numbers // workers)
     else:
-        # Massive datasets: Maximum 130 workers, scale phones per worker
         workers = 130
         phones_per_worker = max(750, total_phone_numbers // workers)
     
@@ -911,6 +910,20 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
     print(f"[Worker {worker_id}] Starting to process {len(phone_batch)} phone numbers")
     print(f"[Worker {worker_id}] Using delays: Base={delays['base_delay']:.1f}s, Random=±{delays['randomization']:.1f}s")
     
+    # Define realistic browser configurations for stealth
+    window_sizes = [
+        '1920,1080', '1366,768', '1536,864', '1440,900', '1600,900', 
+        '1280,720', '1680,1050', '1920,1200', '1024,768', '1280,800'
+    ]
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+    ]
+    
     # Load proxies and setup rotation for this worker
     proxies = load_proxies(config)
     proxy_rotator = None
@@ -923,7 +936,7 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
     else:
         print(f"[Worker {worker_id}] No rotating proxies available - running without proxy")
     
-    # Configure Chrome options for this worker
+    # Configure Chrome options for this worker with realistic stealth settings
     co = ChromiumOptions()
     co.auto_port()  # Automatically assign a free port
     co.headless(config['browser']['headless'])
@@ -932,37 +945,176 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
     if extension_dir:
         co.add_extension(extension_dir)
     
+    # Realistic window dimensions (vary per worker for fingerprint diversity)
+    window_sizes = [
+        '1920,1080', '1366,768', '1536,864', '1440,900', '1600,900', 
+        '1280,720', '1680,1050', '1920,1200', '1024,768', '1280,800'
+    ]
+    selected_size = window_sizes[worker_id % len(window_sizes)]
+    co.set_argument(f'--window-size={selected_size}')
+    
+    # Realistic user agents (rotate based on worker_id)
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+    ]
+    selected_ua = user_agents[worker_id % len(user_agents)]
+    co.set_argument(f'--user-agent={selected_ua}')
+    
+    # Essential stealth arguments
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-dev-shm-usage')
     co.set_argument('--disable-gpu')
-    co.set_argument('--window-size=1920,1080')
     co.set_argument('--disable-blink-features=AutomationControlled')
-    co.set_argument('--disable-plugins')
-    co.set_argument('--disable-images')
-    co.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    co.set_argument('--disable-web-security')
+    co.set_argument('--disable-features=VizDisplayCompositor')
+    
+    # Anti-detection arguments
+    co.set_argument('--exclude-switches=enable-automation')
+    co.set_argument('--disable-extensions-file-access-check')
+    co.set_argument('--disable-plugins-discovery')
+    co.set_argument('--disable-default-apps')
+    co.set_argument('--disable-component-extensions-with-background-pages')
+    co.set_argument('--disable-ipc-flooding-protection')
+    co.set_argument('--enable-features=NetworkService,NetworkServiceInProcess')
+    co.set_argument('--disable-background-timer-throttling')
+    co.set_argument('--disable-backgrounding-occluded-windows')
+    co.set_argument('--disable-renderer-backgrounding')
+    co.set_argument('--disable-field-trial-config')
+    co.set_argument('--disable-back-forward-cache')
+    co.set_argument('--disable-hang-monitor')
+    co.set_argument('--disable-prompt-on-repost')
+    co.set_argument('--disable-sync')
+    co.set_argument('--metrics-recording-only')
+    co.set_argument('--no-first-run')
+    co.set_argument('--no-default-browser-check')
+    co.set_argument('--use-mock-keychain')
+    
+    # Memory and performance optimizations
+    co.set_argument('--memory-pressure-off')
+    co.set_argument('--max_old_space_size=4096')
+    co.set_argument('--disable-background-networking')
+    co.set_argument('--disable-client-side-phishing-detection')
+    co.set_argument('--disable-component-update')
+    co.set_argument('--disable-domain-reliability')
+    
+    # Language and locale settings for German site
+    co.set_argument('--lang=de-DE')
+    co.set_argument('--accept-lang=de-DE,de;q=0.9,en;q=0.8')
     
     # Additional Linux-specific arguments
     if platform.system() != "Windows":
         co.set_argument('--disable-setuid-sandbox')
-        co.set_argument('--disable-dev-shm-usage')
         co.set_argument('--single-process')
         co.set_argument('--no-zygote')
         if extension_dir:
             co.set_argument('--disable-extensions-except=' + extension_dir)
-        co.set_argument('--disable-extensions-file-access-check')
 
     # Initialize browser for this worker
     browser = Chromium(addr_or_opts=co)
     dp = browser.latest_tab
 
-    # Add stealth scripts
+    # Add comprehensive stealth scripts for maximum realism
     try:
+        # Core WebDriver detection removal
         dp.run_js("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-        dp.run_js("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});")
-        dp.run_js("Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en', 'de']});")
-        print(f"[Worker {worker_id}] Stealth scripts applied successfully")
+        
+        # Enhanced plugin and language spoofing
+        dp.run_js("""
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [
+                    {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+                    {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
+                    {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
+                    {name: 'WebKit built-in PDF', filename: 'webkit-pdf-plugin', description: 'Portable Document Format'}
+                ]
+            });
+        """)
+        
+        # Language and timezone spoofing for German locale
+        dp.run_js("""
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['de-DE', 'de', 'en-US', 'en']
+            });
+            Object.defineProperty(navigator, 'language', {
+                get: () => 'de-DE'
+            });
+        """)
+        
+        # Hardware spoofing
+        dp.run_js("""
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+                get: () => Math.floor(Math.random() * 8) + 4
+            });
+            Object.defineProperty(navigator, 'deviceMemory', {
+                get: () => [2, 4, 8, 16][Math.floor(Math.random() * 4)]
+            });
+        """)
+        
+        # Screen and viewport spoofing
+        selected_size_parts = selected_size.split(',')
+        width, height = int(selected_size_parts[0]), int(selected_size_parts[1])
+        dp.run_js(f"""
+            Object.defineProperty(screen, 'width', {{ get: () => {width} }});
+            Object.defineProperty(screen, 'height', {{ get: () => {height} }});
+            Object.defineProperty(screen, 'availWidth', {{ get: () => {width} }});
+            Object.defineProperty(screen, 'availHeight', {{ get: () => {height - 40} }});
+        """)
+        
+        # WebGL and Canvas fingerprint randomization
+        dp.run_js("""
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) {
+                    return 'Intel Inc.';
+                }
+                if (parameter === 37446) {
+                    return 'Intel(R) HD Graphics 620';
+                }
+                return getParameter.apply(this, arguments);
+            };
+        """)
+        
+        # Permission spoofing
+        dp.run_js("""
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+            );
+        """)
+        
+        # Chrome runtime spoofing
+        dp.run_js("""
+            if (!window.chrome) {
+                window.chrome = {};
+            }
+            if (!window.chrome.runtime) {
+                window.chrome.runtime = {
+                    onConnect: undefined,
+                    onMessage: undefined
+                };
+            }
+        """)
+        
+        # Add realistic timing for human behavior
+        dp.run_js(f"""
+            // Simulate real user timing variability
+            const originalSetTimeout = window.setTimeout;
+            window.setTimeout = function(callback, delay) {{
+                const variance = Math.random() * 100 - 50; // ±50ms variance
+                return originalSetTimeout(callback, delay + variance);
+            }};
+        """)
+        
+        print(f"[Worker {worker_id}] 🕵️ Advanced stealth scripts applied successfully")
     except Exception as e:
-        print(f"[Worker {worker_id}] Warning: Could not apply stealth scripts: {e}")
+        print(f"[Worker {worker_id}] ⚠️ Warning: Could not apply some stealth scripts: {e}")
 
     # Results for this worker
     worker_results = []
@@ -984,41 +1136,105 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
             current_proxy = proxy_rotator.get_current_proxy()
             extension_dir = create_proxy_auth_extension(current_proxy, worker_id)
             
-            # Reconfigure browser with new proxy
+            # Reconfigure browser with new proxy and enhanced stealth
             co = ChromiumOptions()
             co.auto_port()
             co.headless(config['browser']['headless'])
             if extension_dir:
                 co.add_extension(extension_dir)
+            
+            # Maintain same realistic settings as initial browser
+            selected_size = window_sizes[worker_id % len(window_sizes)]
+            selected_ua = user_agents[worker_id % len(user_agents)]
+            co.set_argument(f'--window-size={selected_size}')
+            co.set_argument(f'--user-agent={selected_ua}')
+            
+            # Essential stealth arguments
             co.set_argument('--no-sandbox')
             co.set_argument('--disable-dev-shm-usage')
             co.set_argument('--disable-gpu')
-            co.set_argument('--window-size=1920,1080')
             co.set_argument('--disable-blink-features=AutomationControlled')
-            co.set_argument('--disable-plugins')
-            co.set_argument('--disable-images')
-            co.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            co.set_argument('--disable-web-security')
+            co.set_argument('--disable-features=VizDisplayCompositor')
+            co.set_argument('--exclude-switches=enable-automation')
+            co.set_argument('--disable-extensions-file-access-check')
+            co.set_argument('--disable-plugins-discovery')
+            co.set_argument('--disable-default-apps')
+            co.set_argument('--disable-component-extensions-with-background-pages')
+            co.set_argument('--disable-ipc-flooding-protection')
+            co.set_argument('--enable-features=NetworkService,NetworkServiceInProcess')
+            co.set_argument('--disable-background-timer-throttling')
+            co.set_argument('--disable-backgrounding-occluded-windows')
+            co.set_argument('--disable-renderer-backgrounding')
+            co.set_argument('--disable-field-trial-config')
+            co.set_argument('--disable-back-forward-cache')
+            co.set_argument('--disable-hang-monitor')
+            co.set_argument('--disable-prompt-on-repost')
+            co.set_argument('--disable-sync')
+            co.set_argument('--metrics-recording-only')
+            co.set_argument('--no-first-run')
+            co.set_argument('--no-default-browser-check')
+            co.set_argument('--use-mock-keychain')
+            co.set_argument('--memory-pressure-off')
+            co.set_argument('--max_old_space_size=4096')
+            co.set_argument('--disable-background-networking')
+            co.set_argument('--disable-client-side-phishing-detection')
+            co.set_argument('--disable-component-update')
+            co.set_argument('--disable-domain-reliability')
+            co.set_argument('--lang=de-DE')
+            co.set_argument('--accept-lang=de-DE,de;q=0.9,en;q=0.8')
             
             if platform.system() != "Windows":
                 co.set_argument('--disable-setuid-sandbox')
-                co.set_argument('--disable-dev-shm-usage')
                 co.set_argument('--single-process')
                 co.set_argument('--no-zygote')
                 if extension_dir:
                     co.set_argument('--disable-extensions-except=' + extension_dir)
-                co.set_argument('--disable-extensions-file-access-check')
             
             # Initialize new browser
             browser = Chromium(addr_or_opts=co)
             dp = browser.latest_tab
             
-            # Reapply stealth scripts
+            # Reapply comprehensive stealth scripts to new browser instance
             try:
                 dp.run_js("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-                dp.run_js("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});")
-                dp.run_js("Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en', 'de']});")
-            except:
-                pass
+                dp.run_js("""
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [
+                            {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+                            {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
+                            {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
+                            {name: 'WebKit built-in PDF', filename: 'webkit-pdf-plugin', description: 'Portable Document Format'}
+                        ]
+                    });
+                """)
+                dp.run_js("""
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['de-DE', 'de', 'en-US', 'en']
+                    });
+                    Object.defineProperty(navigator, 'language', {
+                        get: () => 'de-DE'
+                    });
+                """)
+                dp.run_js("""
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {
+                        get: () => Math.floor(Math.random() * 8) + 4
+                    });
+                    Object.defineProperty(navigator, 'deviceMemory', {
+                        get: () => [2, 4, 8, 16][Math.floor(Math.random() * 4)]
+                    });
+                """)
+                selected_size_parts = selected_size.split(',')
+                width, height = int(selected_size_parts[0]), int(selected_size_parts[1])
+                dp.run_js(f"""
+                    Object.defineProperty(screen, 'width', {{ get: () => {width} }});
+                    Object.defineProperty(screen, 'height', {{ get: () => {height} }});
+                    Object.defineProperty(screen, 'availWidth', {{ get: () => {width} }});
+                    Object.defineProperty(screen, 'availHeight', {{ get: () => {height - 40} }});
+                """)
+                print(f"[Worker {worker_id}] 🔄 Stealth scripts reapplied after proxy rotation")
+            except Exception as e:
+                print(f"[Worker {worker_id}] ⚠️ Warning: Could not reapply stealth scripts: {e}")
         
         is_first_load = (index == 0) or (proxy_rotator and proxy_rotator.requests_with_current_proxy == 0)
         phone_index = f"W{worker_id}-{index+1}"
