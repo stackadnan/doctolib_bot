@@ -14,11 +14,20 @@ BOT_LOG_FILE="logs/telegram_bot.log"
 CELERY_LOG_FILE="logs/celery.log"
 REDIS_URL="redis://localhost:6379/0"
 
-# Define Celery binary path
+# Define Python and Celery binary paths
+if command -v python3 > /dev/null 2>&1; then
+    PYTHON_BIN="python3"
+elif command -v python > /dev/null 2>&1; then
+    PYTHON_BIN="python"
+else
+    echo "❌ No Python interpreter found (tried python3 and python)"
+    exit 1
+fi
+
 if command -v celery > /dev/null 2>&1; then
     CELERY_BIN="celery"
 else
-    CELERY_BIN="python -m celery"
+    CELERY_BIN="$PYTHON_BIN -m celery"
 fi
 
 # Create PID directory
@@ -68,7 +77,7 @@ setup_environment() {
     
     # Install Python dependencies
     echo "📦 Installing Python dependencies..."
-    pip install 'celery[redis]' flower requests urllib3 python-telegram-bot
+    $PYTHON_BIN -m pip install 'celery[redis]' flower requests urllib3 python-telegram-bot
     
     # Create necessary directories
     echo "📁 Creating directories..."
@@ -103,12 +112,12 @@ setup_environment() {
     
     # Test Celery import
     echo "🧪 Testing Celery integration..."
-    if python -c "from celery_integration import celery_app; print('Celery app imported successfully')" 2>/dev/null; then
+    if $PYTHON_BIN -c "from celery_integration import celery_app; print('Celery app imported successfully')" 2>/dev/null; then
         echo "✅ Celery integration working"
     else
         echo "❌ Celery integration has issues"
         echo "Testing import manually:"
-        python -c "from celery_integration import celery_app"
+        $PYTHON_BIN -c "from celery_integration import celery_app"
         return 1
     fi
     
@@ -127,7 +136,7 @@ start_celery_workers() {
     
     # Test if Celery can be imported first
     echo "🧪 Testing Celery app before starting workers..."
-    if ! python -c "from celery_integration import celery_app; print('OK')" 2>/dev/null; then
+    if ! $PYTHON_BIN -c "from celery_integration import celery_app; print('OK')" 2>/dev/null; then
         echo "❌ Cannot import celery_integration.celery_app"
         echo "Please check celery_integration.py file"
         return 1
@@ -170,16 +179,16 @@ start_telegram_bot() {
     echo "🤖 Starting Telegram bot..."
     
     # Kill existing bot processes
-    pkill -f "python.*telegram_bot.py" 2>/dev/null || true
+    pkill -f "$PYTHON_BIN.*telegram_bot.py" 2>/dev/null || true
     sleep 2
     
     # Start Telegram bot in background
-    nohup python telegram_bot.py > $BOT_LOG_FILE 2>&1 &
+    nohup $PYTHON_BIN telegram_bot.py > $BOT_LOG_FILE 2>&1 &
     
     sleep 3
     
-    if pgrep -f "python.*telegram_bot.py" > /dev/null; then
-        echo "✅ Telegram bot started successfully (PID: $(pgrep -f 'python.*telegram_bot.py'))"
+    if pgrep -f "$PYTHON_BIN.*telegram_bot.py" > /dev/null; then
+        echo "✅ Telegram bot started successfully (PID: $(pgrep -f "$PYTHON_BIN.*telegram_bot.py"))"
         echo "📄 Logs: $BOT_LOG_FILE"
     else
         echo "❌ Failed to start Telegram bot"
@@ -209,8 +218,8 @@ check_status() {
     fi
     
     # Check Telegram bot
-    if pgrep -f "python.*telegram_bot.py" > /dev/null; then
-        echo "✅ Telegram Bot: Running (PID: $(pgrep -f 'python.*telegram_bot.py'))"
+    if pgrep -f "$PYTHON_BIN.*telegram_bot.py" > /dev/null; then
+        echo "✅ Telegram Bot: Running (PID: $(pgrep -f "$PYTHON_BIN.*telegram_bot.py"))"
     else
         echo "❌ Telegram Bot: Not running"
     fi
@@ -226,9 +235,9 @@ stop_all() {
     echo "🛑 Stopping all processes..."
     
     # Stop Telegram bot
-    if pgrep -f "python.*telegram_bot.py" > /dev/null; then
+    if pgrep -f "$PYTHON_BIN.*telegram_bot.py" > /dev/null; then
         echo "🤖 Stopping Telegram bot..."
-        pkill -f "python.*telegram_bot.py"
+        pkill -f "$PYTHON_BIN.*telegram_bot.py"
         sleep 2
     fi
     
