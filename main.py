@@ -939,7 +939,23 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
     # Configure Chrome options for this worker with realistic stealth settings
     co = ChromiumOptions()
     co.auto_port()  # Automatically assign a free port
-    co.headless(config['browser']['headless'])
+    
+    # Handle headless mode vs virtual display on Linux
+    if config['browser']['headless']:
+        co.headless(True)
+        print(f"[Worker {worker_id}] 🕶️ Running in headless mode")
+    else:
+        # Check if we're on Linux and set up for virtual display
+        if platform.system() == "Linux":
+            # Ensure DISPLAY is set for virtual display
+            import os
+            if not os.environ.get('DISPLAY'):
+                os.environ['DISPLAY'] = ':99'
+                print(f"[Worker {worker_id}] 🖥️ Set DISPLAY to :99 for virtual display")
+            print(f"[Worker {worker_id}] 🖥️ Running with virtual display (non-headless)")
+        else:
+            print(f"[Worker {worker_id}] 🖥️ Running with real display (non-headless)")
+        co.headless(False)
     
     # Add proxy extension if available
     if extension_dir:
@@ -1139,7 +1155,17 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
             # Reconfigure browser with new proxy and enhanced stealth
             co = ChromiumOptions()
             co.auto_port()
-            co.headless(config['browser']['headless'])
+            
+            # Handle headless mode vs virtual display on Linux for proxy rotation
+            if config['browser']['headless']:
+                co.headless(True)
+            else:
+                if platform.system() == "Linux":
+                    import os
+                    if not os.environ.get('DISPLAY'):
+                        os.environ['DISPLAY'] = ':99'
+                co.headless(False)
+                
             if extension_dir:
                 co.add_extension(extension_dir)
             

@@ -7,6 +7,14 @@ import tempfile
 import shutil
 from main import main as run_doctolib_bot, load_config, get_base_path, calculate_optimal_workers_and_batch_size, calculate_dynamic_delays
 
+# Import virtual display manager if available
+try:
+    from virtual_display import VirtualDisplayManager
+    VIRTUAL_DISPLAY_AVAILABLE = True
+except ImportError:
+    VIRTUAL_DISPLAY_AVAILABLE = False
+    print("⚠️ Virtual display manager not available. Running without virtual display support.")
+
 # Import shared locks from main.py to avoid conflicts
 try:
     from main import file_lock as shared_file_lock
@@ -17,6 +25,10 @@ config_file_lock = shared_file_lock
 active_jobs = {}
 job_counter = 0
 job_lock = threading.Lock()
+
+# Virtual display management
+virtual_display_manager = None
+virtual_display_lock = threading.Lock()
 
 # Process termination support
 job_termination_flags = {}  # job_id -> threading.Event()
@@ -171,12 +183,75 @@ def signal_handler(signum, frame):
             job_termination_flags[job_id].set()
         terminate_job_processes(job_id)
     
+    # Clean up virtual display
+    cleanup_virtual_display()
+    
     # Clean up resources
     cleanup_proxy_files_on_startup()
     remove_bot_lockfile()
     
     print("👋 Bot shutdown completed")
     sys.exit(0)
+
+def ensure_virtual_display():
+    """Ensure virtual display is running for non-headless mode on Linux"""
+    global virtual_display_manager
+    
+    if not VIRTUAL_DISPLAY_AVAILABLE:
+        return True  # No virtual display support, assume headless or Windows
+    
+    if platform.system() != "Linux":
+        return True  # Not Linux, no virtual display needed
+    
+    with virtual_display_lock:
+        # Check if we already have a display manager
+        if virtual_display_manager is None:
+            virtual_display_manager = VirtualDisplayManager()
+        
+        # Check if display is already running
+        if virtual_display_manager.is_display_running():
+            print("✅ Virtual display is already running")
+            return True
+        
+        # Start virtual display
+        print("🖥️ Starting virtual display for Telegram bot jobs...")
+        if virtual_display_manager.start_display():
+            print("✅ Virtual display started successfully for Telegram bot")
+            return True
+        else:
+            print("❌ Failed to start virtual display")
+            return False
+
+def cleanup_virtual_display():
+    """Clean up virtual display on shutdown"""
+    global virtual_display_manager
+    
+    if virtual_display_manager and VIRTUAL_DISPLAY_AVAILABLE:
+        print("🧹 Cleaning up virtual display...")
+        virtual_display_manager.stop_display()
+        virtual_display_manager = None
+
+def check_virtual_display_requirements(config):
+    """Check if virtual display is needed and available"""
+    if platform.system() != "Linux":
+        return True, "Not running on Linux - virtual display not needed"
+    
+    if config.get('browser', {}).get('headless', True):
+        return True, "Headless mode enabled - virtual display not needed"
+    
+    if not VIRTUAL_DISPLAY_AVAILABLE:
+        return False, "Virtual display module not available. Install requirements or enable headless mode."
+    
+    # Check if Xvfb is installed
+    try:
+        import subprocess
+        result = subprocess.run(['which', 'Xvfb'], capture_output=True)
+        if result.returncode != 0:
+            return False, "Xvfb not installed. Run setup script or install with: sudo apt install xvfb"
+    except Exception:
+        return False, "Cannot check Xvfb installation"
+    
+    return True, "Virtual display requirements met"
 
 def ensure_proxy_config_compatibility(config):
     """Ensure proxy configuration has all required fields for main.py compatibility"""
@@ -600,6 +675,45 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
         if not validate_main_dependencies():
             raise Exception("Required dependencies from main.py are not available")
         
+        # Load base config to check display requirements
+        config = load_config()
+        
+        # Check virtual display requirements before starting job
+        display_ok, display_msg = check_virtual_display_requirements(config)
+        print(f"🖥️ Virtual display check: {display_msg}")
+        
+        if not display_ok:
+            error_msg = f"❌ Virtual display setup failed: {display_msg}"
+            print(error_msg)
+            
+            # Update job status
+            active_jobs[job_id]['status'] = 'failed'
+            active_jobs[job_id]['error'] = display_msg
+            active_jobs[job_id]['end_time'] = datetime.now()
+            
+            # Send error message to user
+            send_simple_message(chat_id, f"❌ Job {job_id} failed to start:\n{display_msg}\n\n"
+                                        f"💡 Solutions:\n"
+                                        f"1. Run setup script: ./setup_virtual_display.sh\n"
+                                        f"2. Enable headless mode in config\n"
+                                        f"3. Install Xvfb: sudo apt install xvfb", bot_application)
+            return
+        
+        # Ensure virtual display is running if needed
+        if platform.system() == "Linux" and not config.get('browser', {}).get('headless', True):
+            if not ensure_virtual_display():
+                error_msg = "Failed to start virtual display"
+                print(f"❌ {error_msg}")
+                
+                # Update job status
+                active_jobs[job_id]['status'] = 'failed'
+                active_jobs[job_id]['error'] = error_msg
+                active_jobs[job_id]['end_time'] = datetime.now()
+                
+                send_simple_message(chat_id, f"❌ Job {job_id} failed: {error_msg}\n"
+                                            f"💡 Try enabling headless mode or run setup script", bot_application)
+                return
+        
         # Create termination flag for this job
         job_termination_flags[job_id] = threading.Event()
         job_processes[job_id] = []
@@ -956,6 +1070,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /help command"""
+    # Check if we're on Linux to show display commands
+    display_commands = ""
+    if platform.system() == "Linux" and VIRTUAL_DISPLAY_AVAILABLE:
+        display_commands = (
+            "\n*Virtual Display (Linux only):*\n"
+            "• `/display` - Show virtual display status\n"
+            "• `/display start` - Start virtual display\n"
+            "• `/display stop` - Stop virtual display\n"
+            "• `/display restart` - Restart virtual display\n"
+        )
+    
     help_message = (
         "📖 *Detailed Help - Doctolib Phone Checker*\n\n"
         "*File Format:*\n"
@@ -987,7 +1112,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• `/status` - Check job status and progress\n"
         "• `/download` - Get current results (even if job is still running)\n"
         "• `/stop` - Stop your running job and get partial results\n"
-        "• `/help` - Show this help message\n\n"
+        "• `/help` - Show this help message\n"
+        f"{display_commands}\n"
         "Need more help? Contact support."
     )
     
@@ -1312,6 +1438,84 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except:
             pass
 
+async def display_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle display management command"""
+    user_id = update.effective_user.id
+    
+    if not VIRTUAL_DISPLAY_AVAILABLE:
+        await update.message.reply_text(
+            "❌ Virtual display management is not available.\n"
+            "This feature is only available on Linux servers."
+        )
+        return
+    
+    if platform.system() != "Linux":
+        await update.message.reply_text(
+            "ℹ️ Virtual display is only needed on Linux servers.\n"
+            "You're running on Windows/Mac where browsers can display normally."
+        )
+        return
+    
+    # Parse command arguments
+    args = context.args
+    if not args:
+        # Show status
+        global virtual_display_manager
+        if virtual_display_manager is None:
+            virtual_display_manager = VirtualDisplayManager()
+        
+        is_running = virtual_display_manager.is_display_running()
+        display_env = os.environ.get('DISPLAY', 'Not set')
+        
+        status_msg = (
+            f"🖥️ *Virtual Display Status*\n\n"
+            f"🔍 *Status:* {'✅ Running' if is_running else '❌ Not running'}\n"
+            f"📺 *Display:* {virtual_display_manager.display_env}\n"
+            f"🔧 *Environment:* {display_env}\n\n"
+            f"*Commands:*\n"
+            f"• `/display start` - Start virtual display\n"
+            f"• `/display stop` - Stop virtual display\n"
+            f"• `/display restart` - Restart virtual display\n"
+            f"• `/display status` - Show this status"
+        )
+        
+        await update.message.reply_text(status_msg, parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    command = args[0].lower()
+    
+    if command == "start":
+        if ensure_virtual_display():
+            await update.message.reply_text("✅ Virtual display started successfully!")
+        else:
+            await update.message.reply_text(
+                "❌ Failed to start virtual display.\n"
+                "Make sure Xvfb is installed: `sudo apt install xvfb`"
+            )
+    
+    elif command == "stop":
+        cleanup_virtual_display()
+        await update.message.reply_text("🛑 Virtual display stopped.")
+    
+    elif command == "restart":
+        cleanup_virtual_display()
+        time.sleep(1)
+        if ensure_virtual_display():
+            await update.message.reply_text("🔄 Virtual display restarted successfully!")
+        else:
+            await update.message.reply_text("❌ Failed to restart virtual display.")
+    
+    elif command == "status":
+        # Same as no arguments
+        await display_command(update, context)
+    
+    else:
+        await update.message.reply_text(
+            f"❌ Unknown display command: {command}\n\n"
+            f"Available commands:\n"
+            f"• start, stop, restart, status"
+        )
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle text messages"""
     text = update.message.text.lower()
@@ -1406,6 +1610,7 @@ def main():
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("download", download_command))
     application.add_handler(CommandHandler("stop", stop_command))
+    application.add_handler(CommandHandler("display", display_command))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
