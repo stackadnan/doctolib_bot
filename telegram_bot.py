@@ -1322,17 +1322,44 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Create job
         job_id = create_job_id()
         
-        # Get multiprocessing info for confirmation
+        # Get processing info for confirmation
         config = load_config()
+        config = ensure_proxy_config_compatibility(config)
+        
+        # Determine what processing mode will be used
         processing_info = ""
-        if config['multiprocessing']['enabled']:
-            max_workers = config['multiprocessing']['max_workers']
-            phones_per_worker = config['multiprocessing']['phones_per_worker']
-            estimated_batches = (len(phone_numbers) + phones_per_worker - 1) // phones_per_worker
-            actual_workers = min(max_workers, estimated_batches)
-            processing_info = f"⚡ *Workers:* {actual_workers} parallel workers\n📦 *Batch size:* {phones_per_worker} phones per worker\n"
+        if CELERY_AVAILABLE:
+            processing_mode = get_processing_mode(config)
+            if processing_mode == 'celery':
+                # Check how many workers are available
+                try:
+                    from celery_integration import is_celery_available
+                    if is_celery_available():
+                        processing_info = f"⚡ *Mode:* Ultra-Fast Celery Processing\n🚀 *Setup:* {len(phone_numbers)} individual workers (1 phone each)\n⏱️ *Expected Time:* 2-3 minutes\n"
+                    else:
+                        processing_info = f"⚠️ *Mode:* Celery workers not detected - using threading fallback\n⚡ *Workers:* Browser automation mode\n"
+                except:
+                    processing_info = f"⚠️ *Mode:* Celery mode selected but workers not verified\n⚡ *Workers:* High-performance processing\n"
+            else:
+                # Fallback to threading mode info
+                if config['multiprocessing']['enabled']:
+                    max_workers = config['multiprocessing']['max_workers']
+                    phones_per_worker = config['multiprocessing']['phones_per_worker']
+                    estimated_batches = (len(phone_numbers) + phones_per_worker - 1) // phones_per_worker
+                    actual_workers = min(max_workers, estimated_batches)
+                    processing_info = f"⚡ *Workers:* {actual_workers} parallel workers\n📦 *Batch size:* {phones_per_worker} phones per worker\n"
+                else:
+                    processing_info = f"🔧 *Processing:* Single-process mode\n"
         else:
-            processing_info = f"🔧 *Processing:* Single-process mode\n"
+            # Only threading mode available
+            if config['multiprocessing']['enabled']:
+                max_workers = config['multiprocessing']['max_workers']
+                phones_per_worker = config['multiprocessing']['phones_per_worker']
+                estimated_batches = (len(phone_numbers) + phones_per_worker - 1) // phones_per_worker
+                actual_workers = min(max_workers, estimated_batches)
+                processing_info = f"⚡ *Workers:* {actual_workers} parallel workers\n📦 *Batch size:* {phones_per_worker} phones per worker\n"
+            else:
+                processing_info = f"🔧 *Processing:* Single-process mode\n"
         
         active_jobs[job_id] = {
             'job_id': job_id,

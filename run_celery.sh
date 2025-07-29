@@ -15,14 +15,22 @@ CELERY_LOG_FILE="logs/celery.log"
 REDIS_URL="redis://localhost:6379/0"
 
 # Define Python and Celery binary paths
-if command -v python3 > /dev/null 2>&1; then
+# Check if we're in WSL and can use Windows Python
+WINDOWS_PYTHON="/mnt/c/Users/muham/AppData/Local/Programs/Python/Python310/python.exe"
+
+if [ -f "$WINDOWS_PYTHON" ] && command -v "$WINDOWS_PYTHON" > /dev/null 2>&1; then
+    echo "🔍 Detected WSL environment with Windows Python available"
+    PYTHON_BIN="$WINDOWS_PYTHON"
+elif command -v python3 > /dev/null 2>&1; then
     PYTHON_BIN="python3"
 elif command -v python > /dev/null 2>&1; then
     PYTHON_BIN="python"
 else
-    echo "❌ No Python interpreter found (tried python3 and python)"
+    echo "❌ No Python interpreter found (tried Windows Python, python3 and python)"
     exit 1
 fi
+
+echo "🐍 Using Python: $PYTHON_BIN"
 
 if command -v celery > /dev/null 2>&1; then
     CELERY_BIN="celery"
@@ -165,8 +173,7 @@ start_celery_workers() {
     # Start the workers
     for ((i=1; i<=num_workers; i++)); do
         echo "Starting worker-$i with concurrency $concurrency..."
-        nohup $CELERY_BIN worker \
-            --app=celery_tasks.app \
+        nohup $CELERY_BIN -A celery_tasks worker \
             --loglevel=info \
             --hostname=worker-$i@%h \
             --concurrency=$concurrency \
