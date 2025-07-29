@@ -7,8 +7,8 @@ echo "🚀 Setting up Celery-based Doctolib Phone Checker with Telegram Bot"
 echo "====================================================================="
 
 # Script configuration
-CELERY_WORKERS=4          # Default number of worker processes
-CELERY_CONCURRENCY=4      # Concurrent tasks per worker
+CELERY_WORKERS=8          # Increased from 4 to 8 workers
+CELERY_CONCURRENCY=8      # Increased from 4 to 8 concurrent tasks per worker
 CELERY_LOG_LEVEL=info
 BOT_LOG_FILE="logs/telegram_bot.log"
 CELERY_LOG_FILE="logs/celery.log"
@@ -48,10 +48,10 @@ show_usage() {
     echo ""
     echo "Examples:"
     echo "  $0 setup                # First-time setup"
-    echo "  $0 all                  # Start everything (4 workers, 4 concurrency = 16 capacity)"
-    echo "  $0 all 8                # Start with 8 workers, 4 concurrency = 32 capacity"
-    echo "  $0 all 4 8              # Start with 4 workers, 8 concurrency = 32 capacity"
-    echo "  $0 workers 12 6         # Start 12 workers with 6 concurrency = 72 capacity"
+    echo "  $0 all                  # Start everything (8 workers, 8 concurrency = 64 capacity)"
+    echo "  $0 all 12               # Start with 12 workers, 8 concurrency = 96 capacity"
+    echo "  $0 all 8 16             # Start with 8 workers, 16 concurrency = 128 capacity"
+    echo "  $0 workers 16 12        # Start 16 workers with 12 concurrency = 192 capacity"
     echo "  $0 status               # Check what's running"
     echo "  $0 stop                 # Stop everything"
 }
@@ -122,6 +122,16 @@ setup_environment() {
     fi
     
     echo "✅ Environment setup complete"
+    
+    # Additional debug information
+    echo ""
+    echo "🔍 Environment Debug Info:"
+    echo "   Working directory: $(pwd)"
+    echo "   Python version: $($PYTHON_BIN --version)"
+    echo "   Results directory: $(pwd)/results"
+    echo "   Results dir exists: $([ -d results ] && echo 'YES' || echo 'NO')"
+    echo "   Results dir permissions: $(ls -ld results 2>/dev/null || echo 'NOT FOUND')"
+    
     return 0
 }
 

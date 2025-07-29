@@ -6,6 +6,7 @@ This allows the bot to use either threading-based browser automation or Celery-b
 import os
 import json
 import time
+import requests
 from datetime import datetime
 from celery import group
 from celery_tasks import check_phone_registration, app as celery_app
@@ -19,9 +20,14 @@ def process_phones_with_celery(phone_numbers, job_id, config, chat_id, bot_appli
         print(f"🚀 Starting Celery-based processing for job {job_id}")
         print(f"📱 Processing {len(phone_numbers)} phone numbers with distributed workers")
         
-        # Load Celery configuration
+        # Load Celery configuration  
         celery_config = config.get('celery', {})
-        batch_size = celery_config.get('batch_size', 50)  # Process phones in batches
+        batch_size = celery_config.get('batch_size', 10)  # Reduced from 50 to 10 for faster individual processing
+        
+        # For small jobs (< 100 phones), process individually for maximum speed
+        if len(phone_numbers) < 100:
+            batch_size = 1
+            print(f"🚀 Small job detected - processing individually for maximum speed")
         
         # Split phone numbers into batches for better performance
         phone_batches = [

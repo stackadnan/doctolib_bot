@@ -35,8 +35,8 @@ def get_default_config():
         "api": {
             "base_url": "https://www.doctolib.de",
             "registration_endpoint": "/authn/patient/realms/doctolib-patient/protocol/openid-connect/registrations",
-            "timeout": 30,
-            "max_retries": 3
+            "timeout": 10,          # Reduced from 30 to 10 seconds
+            "max_retries": 2        # Reduced from 3 to 2 retries
         },
         "proxy": {
             "use_rotating_proxies": True,
@@ -47,9 +47,9 @@ def get_default_config():
             }
         },
         "delays": {
-            "base_delay": 2.0,
-            "randomization": 1.0,
-            "retry_delay": 5.0
+            "base_delay": 0.5,      # Reduced from 2.0 to 0.5 seconds
+            "randomization": 0.3,   # Reduced from 1.0 to 0.3 seconds  
+            "retry_delay": 2.0      # Reduced from 5.0 to 2.0 seconds
         },
         "files": {
             "phone_numbers_file": "results/phone_numbers.txt",
@@ -62,8 +62,8 @@ def create_session_with_retries():
     session = requests.Session()
     
     retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
+        total=2,                # Reduced from 3 to 2 total retries
+        backoff_factor=0.5,     # Reduced from 1 to 0.5 seconds
         status_forcelist=[429, 500, 502, 503, 504],
     )
     
@@ -99,7 +99,7 @@ def get_random_delay(base_delay, randomization):
     """Get a randomized delay"""
     return max(0.1, random.uniform(base_delay - randomization, base_delay + randomization))
 
-@app.task(bind=True, max_retries=3)
+@app.task(bind=True, max_retries=2)  # Reduced from 3 to 2 retries
 def check_phone_registration(self, phone_number, proxy_info=None):
     """
     Celery task to check if a phone number is registered with Doctolib
