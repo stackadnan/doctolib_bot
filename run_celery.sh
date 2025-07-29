@@ -4,42 +4,7 @@
 # This script sets up and runs the Celery-based phone checker with Telegram bot
 
 echo "🚀 Setting up Celery-based Doctolib Phone Checker with Telegram Bot"
-echo "=============================    "workers")
-        echo "🚀 Starting Celery workers only..."
-        check_redis || exit 1
-        setup_environment || exit 1
-        start_celery_workers "${2:-$CELERY_WORKERS}" "${3:-$CELERY_CONCURRENCY}" || exit 1
-        echo "✅ Workers started! Use '$0 status' to check status"
-        ;;
-    "bot")
-        echo "🤖 Starting Telegram bot only..."
-        setup_environment || exit 1
-        start_telegram_bot || exit 1
-        ;;
-    "all")
-        echo "🚀 Starting complete Doctolib Checker system..."
-        check_redis || exit 1
-        setup_environment || exit 1
-        start_celery_workers "${2:-$CELERY_WORKERS}" "${3:-$CELERY_CONCURRENCY}" || exit 1
-        start_telegram_bot || exit 1
-        echo ""
-        echo "🎉 System started successfully!"
-        echo "📊 Use '$0 status' to check status"
-        echo "📄 Use '$0 logs' to view logs"
-        echo "🛑 Use '$0 stop' to stop everything"
-        ;;
-    "status")
-        check_status
-        ;;
-    "stop")
-        stop_all
-        ;;
-    "logs")
-        show_logs
-        ;;
-    "help"|*)
-        show_usage
-        ;;========================="
+echo "====================================================================="
 
 # Script configuration
 CELERY_WORKERS=4          # Default number of worker processes
@@ -48,6 +13,16 @@ CELERY_LOG_LEVEL=info
 BOT_LOG_FILE="logs/telegram_bot.log"
 CELERY_LOG_FILE="logs/celery.log"
 REDIS_URL="redis://localhost:6379/0"
+
+# Define Celery binary path
+if command -v celery > /dev/null 2>&1; then
+    CELERY_BIN="celery"
+else
+    CELERY_BIN="python -m celery"
+fi
+
+# Create PID directory
+mkdir -p pids
 
 # Function to show usage
 show_usage() {
@@ -93,13 +68,14 @@ setup_environment() {
     
     # Install Python dependencies
     echo "📦 Installing Python dependencies..."
-    pip install celery redis requests urllib3 python-telegram-bot
+    pip install 'celery[redis]' flower requests urllib3 python-telegram-bot
     
     # Create necessary directories
     echo "📁 Creating directories..."
     mkdir -p results
     mkdir -p logs
     mkdir -p proxy_files
+    mkdir -p pids
     
     # Check configuration file
     if [ ! -f "config.json" ]; then
@@ -125,6 +101,17 @@ setup_environment() {
         echo "✅ Proxies file found"
     fi
     
+    # Test Celery import
+    echo "🧪 Testing Celery integration..."
+    if python -c "from celery_integration import celery_app; print('Celery app imported successfully')" 2>/dev/null; then
+        echo "✅ Celery integration working"
+    else
+        echo "❌ Celery integration has issues"
+        echo "Testing import manually:"
+        python -c "from celery_integration import celery_app"
+        return 1
+    fi
+    
     echo "✅ Environment setup complete"
     return 0
 }
@@ -138,22 +125,35 @@ start_celery_workers() {
     echo "🚀 Starting $num_workers Celery workers with concurrency $concurrency each..."
     echo "📊 Total processing capacity: $total_capacity concurrent tasks"
     
+    # Test if Celery can be imported first
+    echo "🧪 Testing Celery app before starting workers..."
+    if ! python -c "from celery_integration import celery_app; print('OK')" 2>/dev/null; then
+        echo "❌ Cannot import celery_integration.celery_app"
+        echo "Please check celery_integration.py file"
+        return 1
+    fi
+    
     # Start Celery flower monitoring (optional web UI)
     echo "🌸 Starting Celery Flower monitoring..."
-    nohup $CELERY_BIN flower --broker=$REDIS_URL --port=5555 > logs/flower.log 2>&1 &
-    echo $! > pids/flower.pid
+    if command -v flower > /dev/null 2>&1; then
+        nohup flower --broker=$REDIS_URL --port=5555 > logs/flower.log 2>&1 &
+        echo $! > pids/flower.pid
+        echo "✅ Flower started on port 5555"
+    else
+        echo "⚠️ Flower not available, skipping web UI"
+    fi
     
     # Start the workers
     for ((i=1; i<=num_workers; i++)); do
         echo "Starting worker-$i with concurrency $concurrency..."
-        nohup $CELERY_BIN worker 
-            --app=celery_integration.celery_app 
-            --loglevel=info 
-            --hostname=worker-$i@%h 
-            --concurrency=$concurrency 
-            --max-tasks-per-child=1000 
-            --time-limit=300 
-            --soft-time-limit=240 
+        nohup $CELERY_BIN worker \
+            --app=celery_integration.celery_app \
+            --loglevel=info \
+            --hostname=worker-$i@%h \
+            --concurrency=$concurrency \
+            --max-tasks-per-child=1000 \
+            --time-limit=300 \
+            --soft-time-limit=240 \
             > logs/worker-$i.log 2>&1 &
         
         echo $! > pids/worker-$i.pid
@@ -278,17 +278,22 @@ case "${1:-help}" in
         setup_environment
         ;;
     "workers")
+        echo "🚀 Starting Celery workers only..."
         check_redis || exit 1
-        start_celery_workers "${2:-$CELERY_WORKERS}"
+        setup_environment || exit 1
+        start_celery_workers "${2:-$CELERY_WORKERS}" "${3:-$CELERY_CONCURRENCY}" || exit 1
+        echo "✅ Workers started! Use '$0 status' to check status"
         ;;
     "bot")
-        start_telegram_bot
+        echo "🤖 Starting Telegram bot only..."
+        setup_environment || exit 1
+        start_telegram_bot || exit 1
         ;;
     "all")
         echo "🚀 Starting complete Doctolib Checker system..."
         check_redis || exit 1
         setup_environment || exit 1
-        start_celery_workers "${2:-$CELERY_WORKERS}" || exit 1
+        start_celery_workers "${2:-$CELERY_WORKERS}" "${3:-$CELERY_CONCURRENCY}" || exit 1
         start_telegram_bot || exit 1
         echo ""
         echo "🎉 System started successfully!"
