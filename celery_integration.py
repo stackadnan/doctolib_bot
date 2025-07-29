@@ -8,7 +8,7 @@ import json
 import time
 from datetime import datetime
 from celery import group
-from celery_tasks import check_phone_registration
+from celery_tasks import check_phone_registration, app as celery_app
 
 def process_phones_with_celery(phone_numbers, job_id, config, chat_id, bot_application):
     """
