@@ -17,7 +17,7 @@ def get_base_path():
 BASE_PATH = get_base_path()
 
 def get_ip_address(proxy_info=None):
-    """Get current IP address, optionally through a proxy"""
+    """Get current IP address, optionally through a proxy - DEPRECATED: Not used for faster startup"""
     try:
         if proxy_info:
             # Use proxy for IP check
@@ -40,7 +40,7 @@ def get_ip_address(proxy_info=None):
         return f"Error: {str(e)}"
 
 def test_proxy_connection(proxy_info, proxy_index):
-    """Test proxy connection and return IP information"""
+    """Test proxy connection and return IP information - DEPRECATED: Not used for faster startup"""
     print(f"🔍 Testing proxy {proxy_index + 1}: {proxy_info['host']}:{proxy_info['port']}")
     
     # Test proxy IP
@@ -54,7 +54,7 @@ def test_proxy_connection(proxy_info, proxy_index):
         return False, proxy_ip
 
 def validate_and_test_proxies(proxies):
-    """Test all proxies and return working ones with their IPs"""
+    """Test all proxies and return working ones with their IPs - DEPRECATED: Not used for faster startup"""
     if not proxies:
         print("No proxies to test")
         return []
@@ -249,15 +249,9 @@ def load_proxies(config):
                 'password': config['proxy']['password']
             }
             
-            # Test the static proxy
-            print("🧪 Testing static proxy...")
-            success, ip = test_proxy_connection(static_proxy, 0)
-            if success:
-                static_proxy['tested_ip'] = ip
-                return [static_proxy]
-            else:
-                print("❌ Static proxy failed, running without proxy")
-                return []
+            # Skip proxy testing for faster startup - use static proxy directly
+            print("⚡ Skipping proxy testing for faster startup - using static proxy")
+            return [static_proxy]
         else:
             print("No proxy configuration found, running without proxy")
             return []
@@ -282,9 +276,9 @@ def load_proxies(config):
         
         print(f"📁 Loaded {len(proxies)} proxies from {proxy_file}")
         
-        # Test all proxies and return only working ones
-        working_proxies = validate_and_test_proxies(proxies)
-        return working_proxies
+        # Skip proxy testing for faster startup - use all proxies directly
+        print(f"⚡ Skipping proxy testing for faster startup - using all {len(proxies)} proxies")
+        return proxies
         
     except FileNotFoundError:
         print(f"❌ Proxy file not found: {proxy_file}")
@@ -298,15 +292,9 @@ def load_proxies(config):
                 'password': config['proxy']['password']
             }
             
-            # Test the static proxy
-            print("🧪 Testing static proxy...")
-            success, ip = test_proxy_connection(static_proxy, 0)
-            if success:
-                static_proxy['tested_ip'] = ip
-                return [static_proxy]
-            else:
-                print("❌ Static proxy failed, running without proxy")
-                return []
+            # Skip proxy testing for faster startup - use static proxy directly
+            print("⚡ Skipping proxy testing for faster startup - using fallback static proxy")
+            return [static_proxy]
         return []
     except Exception as e:
         print(f"❌ Error loading proxies: {e}")
@@ -329,7 +317,7 @@ class ProxyRotator:
         )
         
         current_proxy = self.get_current_proxy()
-        proxy_info = f"{current_proxy['host']}:{current_proxy['port']} (IP: {current_proxy.get('tested_ip', 'Unknown')})" if current_proxy else "None"
+        proxy_info = f"{current_proxy['host']}:{current_proxy['port']}" if current_proxy else "None"
         print(f"[Worker {worker_id}] 🔄 Proxy rotator initialized - using proxy {self.current_proxy_index + 1}: {proxy_info} for {self.max_requests_for_current_proxy} requests")
     
     def get_current_proxy(self):
@@ -364,8 +352,8 @@ class ProxyRotator:
         new_proxy = self.proxies[self.current_proxy_index]
         
         print(f"[Worker {self.worker_id}] 🔄 Rotated proxy:")
-        print(f"   From: {old_proxy['host']}:{old_proxy['port']} (IP: {old_proxy.get('tested_ip', 'Unknown')})")
-        print(f"   To: {new_proxy['host']}:{new_proxy['port']} (IP: {new_proxy.get('tested_ip', 'Unknown')})")
+        print(f"   From: {old_proxy['host']}:{old_proxy['port']}")
+        print(f"   To: {new_proxy['host']}:{new_proxy['port']}")
         print(f"   Will use for {self.max_requests_for_current_proxy} requests")
     
     def increment_request_count(self):
@@ -453,7 +441,7 @@ def create_proxy_auth_extension(proxy_info, worker_id=0):
     with open(background_path, 'w') as background_file:
         background_file.write(background_js)
     
-    print(f"[Worker {worker_id}] 🌐 Proxy auth extension created with proxy {proxy_info['host']}:{proxy_info['port']} (IP: {proxy_info.get('tested_ip', 'Unknown')})")
+    print(f"[Worker {worker_id}] 🌐 Proxy auth extension created with proxy {proxy_info['host']}:{proxy_info['port']}")
     return directory_name
 
 def read_phone_numbers(config):
