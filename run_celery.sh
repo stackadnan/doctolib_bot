@@ -180,6 +180,8 @@ start_celery_workers() {
             --max-tasks-per-child=1000 \
             --time-limit=300 \
             --soft-time-limit=240 \
+            --uid=nobody \
+            --gid=nogroup \
             > logs/worker-$i.log 2>&1 &
         
         echo $! > pids/worker-$i.pid

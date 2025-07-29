@@ -1,4 +1,5 @@
 {
+    "processing_mode": "celery",
     "multiprocessing": {
         "enabled": true,
         "auto_scale": true,
