@@ -100,15 +100,17 @@ def get_random_delay(base_delay, randomization):
     return max(0.1, random.uniform(base_delay - randomization, base_delay + randomization))
 
 @app.task(bind=True, max_retries=2)  # Reduced from 3 to 2 retries
-def check_phone_registration(self, phone_number, proxy_info=None):
+def check_phone_registration(self, phone_number, proxy_info=None, config=None):
     """
     Celery task to check if a phone number is registered with Doctolib
     Uses HTTP requests instead of browser automation
     """
-    config = load_config()
+    if config is None:
+        config = load_config()
     task_id = self.request.id
     
     print(f"[Task {task_id}] Checking phone number: {phone_number}")
+    print(f"[Task {task_id}] Output file: {config.get('files', {}).get('output_file', 'Not set')}")
     
     try:
         # Create session

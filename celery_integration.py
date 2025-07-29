@@ -42,9 +42,16 @@ def process_phones_with_celery(phone_numbers, job_id, config, chat_id, bot_appli
         os.makedirs(results_dir, exist_ok=True)
         job_output_file = os.path.join(results_dir, f"downloadable_{job_id}.txt")
         
+        # Configure output file in config for tasks to use
+        config['files'] = config.get('files', {})
+        config['files']['output_file'] = f"results/downloadable_{job_id}.txt"
+        
         # Clear the output file
         with open(job_output_file, 'w', encoding='utf-8') as f:
             f.write("")
+        
+        print(f"📝 Results will be written to: {job_output_file}")
+        print(f"🔍 Config output file: {config['files']['output_file']}")
         
         # Create Celery group for parallel execution
         batch_tasks = []
@@ -53,15 +60,22 @@ def process_phones_with_celery(phone_numbers, job_id, config, chat_id, bot_appli
             for phone_idx, phone in enumerate(phone_batch):
                 task = check_phone_registration.s(
                     phone_number=phone,
-                    worker_id=f"celery_{batch_idx}_{phone_idx}",
-                    config=config
+                    proxy_info=None,  # Add proxy support later
+                    config=config     # Pass the full config with output file
                 )
                 batch_tasks.append(task)
         
         # Execute tasks in parallel using Celery group
         print(f"⚡ Submitting {len(batch_tasks)} tasks to Celery workers...")
+        print(f"🔍 Debug: First task signature: {batch_tasks[0] if batch_tasks else 'No tasks'}")
+        print(f"🔍 Debug: Celery app: {celery_app}")
+        print(f"🔍 Debug: Redis URL: redis://localhost:6379/0")
+        
         task_group = group(batch_tasks)
         group_result = task_group.apply_async()
+        
+        print(f"✅ Task group submitted successfully. Group ID: {group_result.id}")
+        print(f"📋 Individual task IDs: {[r.id for r in group_result.results[:3]]}{'...' if len(group_result.results) > 3 else ''}")
         
         # Monitor progress and collect results
         total_tasks = len(batch_tasks)
@@ -69,6 +83,9 @@ def process_phones_with_celery(phone_numbers, job_id, config, chat_id, bot_appli
         failed_tasks = 0
         
         # Wait for all tasks to complete with progress monitoring
+        start_time = time.time()
+        last_check_time = start_time
+        
         while not group_result.ready():
             # Count completed tasks
             current_completed = sum(1 for result in group_result.results if result.ready())
@@ -76,52 +93,54 @@ def process_phones_with_celery(phone_numbers, job_id, config, chat_id, bot_appli
             if current_completed != completed_tasks:
                 completed_tasks = current_completed
                 progress = (completed_tasks / total_tasks) * 100
-                print(f"📊 Progress: {completed_tasks}/{total_tasks} ({progress:.1f}%)")
+                elapsed = time.time() - start_time
+                rate = completed_tasks / elapsed if elapsed > 0 else 0
+                eta = (total_tasks - completed_tasks) / rate if rate > 0 else 0
+                
+                print(f"📊 Progress: {completed_tasks}/{total_tasks} ({progress:.1f}%) - {rate:.1f}/s - ETA: {eta:.0f}s")
+                
+                # Check if new results are being written to file
+                if os.path.exists(job_output_file):
+                    with open(job_output_file, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                    print(f"📄 File has {len(lines)} results written")
                 
                 # Send progress update to user every 10%
                 if completed_tasks % max(1, total_tasks // 10) == 0:
                     send_progress_update(chat_id, job_id, completed_tasks, total_tasks, bot_application)
             
-            time.sleep(5)  # Check every 5 seconds
+            time.sleep(2)  # Check every 2 seconds for faster updates
         
-        # Collect all results
-        print("📋 Collecting results from all workers...")
-        results = group_result.get()  # This blocks until all tasks complete
+        # Collect all results (this will wait for completion)
+        print("📋 All tasks completed! Collecting final results...")
+        group_result.get()  # Wait for all tasks to complete
         
-        # Process and save results
+        # Read final results from file (since tasks write directly to file)
         registered_count = 0
         not_registered_count = 0
         failed_count = 0
+        total_processed = 0
         
-        with open(job_output_file, 'w', encoding='utf-8') as f:
-            for result in results:
-                phone = result['phone_number']
-                success = result['success']
-                status = result.get('status')
-                worker_id = result.get('worker_id', 'unknown')
+        if os.path.exists(job_output_file):
+            with open(job_output_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                total_processed = len(lines)
                 
-                if success:
-                    if status == 'registered':
-                        f.write(f"{phone} - Registered (Worker {worker_id})\n")
+                for line in lines:
+                    line = line.strip().lower()
+                    if 'registered' in line and 'not registered' not in line:
                         registered_count += 1
-                        print(f"[{worker_id}] ✓ REGISTERED: {phone}")
-                    elif status == 'not_registered':
-                        f.write(f"{phone} - Not Registered (Worker {worker_id})\n")
+                    elif 'not registered' in line:
                         not_registered_count += 1
-                        print(f"[{worker_id}] ✗ NOT REGISTERED: {phone}")
                     else:
-                        f.write(f"{phone} - Unknown Status (Worker {worker_id})\n")
                         failed_count += 1
-                        print(f"[{worker_id}] ? UNKNOWN: {phone}")
-                else:
-                    f.write(f"{phone} - Failed to Process (Worker {worker_id})\n")
-                    failed_count += 1
-                    print(f"[{worker_id}] ✗ FAILED: {phone}")
+        
+        print(f"📊 Final Results: {total_processed} processed, {registered_count} registered, {not_registered_count} not registered, {failed_count} failed")
         
         # Return results summary
         return {
             'success': True,
-            'total_processed': len(results),
+            'total_processed': total_processed,
             'registered': registered_count,
             'not_registered': not_registered_count,
             'failed': failed_count,

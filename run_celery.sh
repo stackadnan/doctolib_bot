@@ -137,7 +137,7 @@ setup_environment() {
 
 # Function to start Celery worker
 start_celery_workers() {
-    local num_workers=${1:-4}
+    local num_workers=${1:-8}  # Fixed default to match CELERY_WORKERS
     local concurrency=${2:-$CELERY_CONCURRENCY}
     local total_capacity=$((num_workers * concurrency))
     
@@ -166,7 +166,7 @@ start_celery_workers() {
     for ((i=1; i<=num_workers; i++)); do
         echo "Starting worker-$i with concurrency $concurrency..."
         nohup $CELERY_BIN worker \
-            --app=celery_integration.celery_app \
+            --app=celery_tasks.app \
             --loglevel=info \
             --hostname=worker-$i@%h \
             --concurrency=$concurrency \

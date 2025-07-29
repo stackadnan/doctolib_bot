@@ -6,7 +6,15 @@ from telegram.constants import ParseMode
 import tempfile
 import shutil
 import subprocess,psutil,requests
-from main import main as run_doctolib_bot, load_config, get_base_path, calculate_optimal_workers_and_batch_size, calculate_dynamic_delays
+# Import main.py functions for threading mode (fallback)
+try:
+    from main import main as run_doctolib_bot, load_config, get_base_path, calculate_optimal_workers_and_batch_size, calculate_dynamic_delays
+    MAIN_AVAILABLE = True
+    print("✅ main.py functions loaded for threading mode")
+except ImportError as e:
+    MAIN_AVAILABLE = False
+    print(f"⚠️ main.py functions not available: {e}")
+    print("📝 Threading mode will be limited")
 
 # Import shared locks from main.py to avoid conflicts
 try:
@@ -19,6 +27,12 @@ try:
     from celery_integration import process_phones_with_celery, get_processing_mode, is_celery_available
     CELERY_AVAILABLE = True
     print("✅ Celery integration loaded successfully")
+    # Test if Celery workers are actually available
+    if is_celery_available():
+        print("✅ Celery workers detected and ready")
+    else:
+        print("⚠️ Celery integration loaded but no workers detected")
+        print("🔄 Start workers with: ./run_celery.sh workers")
 except ImportError as e:
     CELERY_AVAILABLE = False
     print(f"⚠️ Celery integration not available: {e}")
@@ -474,8 +488,14 @@ def send_completion_message_sync(chat_id, job_id, output_file, bot_application):
 
 def validate_main_dependencies():
     """Validate that all required functions from main.py are available"""
+    if not MAIN_AVAILABLE:
+        print("❌ main.py functions not available")
+        return False
+        
     try:
+        # Test import of specific functions needed for threading mode
         from main import process_phone_batch, save_result_to_file, file_lock
+        print("✅ All required main.py functions validated")
         return True
     except ImportError as e:
         print(f"❌ Error importing required functions from main.py: {e}")
@@ -828,10 +848,14 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
         # Determine processing mode
         if CELERY_AVAILABLE:
             processing_mode = get_processing_mode(config)
-        else:
+            print(f"🔄 Celery available - detected processing mode: {processing_mode}")
+        elif MAIN_AVAILABLE:
             processing_mode = 'threading'
+            print(f"🔄 Celery not available - using threading mode")
+        else:
+            raise Exception("Neither Celery nor threading mode available. Please check setup.")
         
-        print(f"🔄 Using processing mode: {processing_mode}")
+        print(f"� Final processing mode: {processing_mode}")
         
         # Create termination flag for this job (only needed for threading mode)
         if processing_mode == 'threading':
