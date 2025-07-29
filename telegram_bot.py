@@ -1,4 +1,4 @@
-import os,json,time,threading,tempfile,platform
+import os,json,time,threading,tempfile,platform,signal,sys
 from datetime import datetime
 from telegram import Update, Document
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -11,16 +11,9 @@ from main import main as run_doctolib_bot, load_config, get_base_path
 try:
     from main import file_lock as shared_file_lock
 except ImportError:
-    # Fallback if main.py doesn't have the lock exported
     shared_file_lock = threading.Lock()
 
-# Global file lock for config operations - use shared lock
 config_file_lock = shared_file_lock
-
-# Note: Removed unsafe safe_config_operation function that manipulated config.json
-# Now using parameter-based configuration passing to avoid race conditions
-
-# Global variables for job tracking
 active_jobs = {}
 job_counter = 0
 job_lock = threading.Lock()
@@ -86,6 +79,104 @@ def schedule_job_cleanup():
     print("Job cleanup scheduler started")
 
 BASE_PATH = get_base_path()
+
+# Bot instance management
+BOT_LOCKFILE = os.path.join(BASE_PATH, '.bot_instance.lock')
+bot_application_instance = None
+
+def create_bot_lockfile():
+    """Create a lockfile to prevent multiple bot instances"""
+    try:
+        if os.path.exists(BOT_LOCKFILE):
+            # Check if the process in the lockfile is still running
+            try:
+                with open(BOT_LOCKFILE, 'r') as f:
+                    old_pid = int(f.read().strip())
+                
+                # Check if process is still running
+                try:
+                    if platform.system() == "Windows":
+                        import subprocess
+                        result = subprocess.run(['tasklist', '/FI', f'PID eq {old_pid}'], 
+                                              capture_output=True, text=True)
+                        if str(old_pid) not in result.stdout:
+                            # Process is dead, remove stale lockfile
+                            os.remove(BOT_LOCKFILE)
+                            print(f"🧹 Removed stale lockfile for dead process {old_pid}")
+                        else:
+                            print(f"❌ Another bot instance is already running (PID: {old_pid})")
+                            print("Please stop the other instance before starting this one.")
+                            return False
+                    else:
+                        # Unix-like systems
+                        os.kill(old_pid, 0)  # This will raise an exception if process doesn't exist
+                        print(f"❌ Another bot instance is already running (PID: {old_pid})")
+                        print("Please stop the other instance before starting this one.")
+                        return False
+                except (subprocess.CalledProcessError, ProcessLookupError, OSError):
+                    # Process is dead, remove stale lockfile
+                    os.remove(BOT_LOCKFILE)
+                    print(f"🧹 Removed stale lockfile for dead process {old_pid}")
+            except (ValueError, FileNotFoundError):
+                # Invalid lockfile, remove it
+                if os.path.exists(BOT_LOCKFILE):
+                    os.remove(BOT_LOCKFILE)
+                print("🧹 Removed invalid lockfile")
+        
+        # Create new lockfile with current PID
+        with open(BOT_LOCKFILE, 'w') as f:
+            f.write(str(os.getpid()))
+        print(f"📁 Created bot instance lockfile (PID: {os.getpid()})")
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ Warning: Could not create bot lockfile: {e}")
+        return True  # Continue anyway
+
+def remove_bot_lockfile():
+    """Remove the bot lockfile on shutdown"""
+    try:
+        if os.path.exists(BOT_LOCKFILE):
+            with open(BOT_LOCKFILE, 'r') as f:
+                lockfile_pid = int(f.read().strip())
+            
+            # Only remove if it's our lockfile
+            if lockfile_pid == os.getpid():
+                os.remove(BOT_LOCKFILE)
+                print(f"🧹 Removed bot instance lockfile")
+            else:
+                print(f"⚠️ Lockfile belongs to different process ({lockfile_pid}), not removing")
+    except Exception as e:
+        print(f"⚠️ Warning: Could not remove bot lockfile: {e}")
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    print(f"\n🛑 Received signal {signum}, shutting down gracefully...")
+    
+    # Stop the bot application if it exists
+    global bot_application_instance
+    if bot_application_instance:
+        print("🔄 Stopping bot application...")
+        try:
+            bot_application_instance.stop()
+            print("✅ Bot application stopped")
+        except Exception as e:
+            print(f"⚠️ Error stopping bot application: {e}")
+    
+    # Terminate any active jobs
+    print("🛑 Terminating active jobs...")
+    global active_jobs, job_termination_flags
+    for job_id in list(active_jobs.keys()):
+        if job_id in job_termination_flags:
+            job_termination_flags[job_id].set()
+        terminate_job_processes(job_id)
+    
+    # Clean up resources
+    cleanup_proxy_files_on_startup()
+    remove_bot_lockfile()
+    
+    print("👋 Bot shutdown completed")
+    sys.exit(0)
 
 def ensure_proxy_config_compatibility(config):
     """Ensure proxy configuration has all required fields for main.py compatibility"""
@@ -579,6 +670,13 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
         job_config['files']['phone_numbers_file'] = f"results/phone_numbers_{job_id}.txt"
         job_config['files']['output_file'] = f"results/downloadable_{job_id}.txt"
         
+        # Debug: Print the full paths being used
+        print(f"🔍 Debug - Job {job_id} file paths:")
+        print(f"   Phone file: {job_phone_file}")
+        print(f"   Output file: {job_output_file}")
+        print(f"   Config output: {job_config['files']['output_file']}")
+        print(f"   Full output path: {os.path.join(BASE_PATH, job_config['files']['output_file'])}")
+        
         # Run processing with job-specific configuration
         phone_numbers = active_jobs[job_id]['phone_numbers']
         
@@ -630,10 +728,32 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
                         completed_batches += 1
                         print(f"✅ Batch {batch_id + 1}/{total_batches} completed with {len(worker_results)} results")
                         
-                        # Save results to job-specific file
-                        from main import save_result_to_file
+                        # Save results to job-specific file using direct file writing
                         for result in worker_results:
-                            save_result_to_file(result, job_config)
+                            # Use direct file writing instead of save_result_to_file to ensure it goes to the right place
+                            phone_number = result['phone_number']
+                            success = result['success']
+                            status = result['status']
+                            worker_id = result['worker_id']
+                            
+                            with shared_file_lock:  # Use the shared file lock
+                                try:
+                                    with open(job_output_file, 'a', encoding='utf-8') as f:
+                                        if success:
+                                            if status == 'registered':
+                                                f.write(f"{phone_number} - Registered (Worker {worker_id})\n")
+                                                print(f"[Job {job_id}][Worker {worker_id}] ✓ REGISTERED: {phone_number}")
+                                            elif status == 'not_registered':
+                                                f.write(f"{phone_number} - Not Registered (Worker {worker_id})\n")
+                                                print(f"[Job {job_id}][Worker {worker_id}] ✗ NOT REGISTERED: {phone_number}")
+                                            else:
+                                                f.write(f"{phone_number} - Unknown Status (Worker {worker_id})\n")
+                                                print(f"[Job {job_id}][Worker {worker_id}] ? UNKNOWN STATUS: {phone_number}")
+                                        else:
+                                            f.write(f"{phone_number} - Failed to Process (Worker {worker_id})\n")
+                                            print(f"[Job {job_id}][Worker {worker_id}] ✗ FAILED to process {phone_number}")
+                                except Exception as e:
+                                    print(f"[Job {job_id}][Worker {worker_id}] Error saving result for {phone_number}: {e}")
                             
                     except concurrent.futures.TimeoutError:
                         print(f"⏰ Batch {batch_id + 1} timed out")
@@ -910,9 +1030,18 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Check if there's a partial or complete output file
     job_output_file = os.path.join(BASE_PATH, "results", f"downloadable_{job_id}.txt")
     
+    # Debug: Print file information
+    print(f"🔍 Debug - Download command for job {job_id}:")
+    print(f"   Looking for file: {job_output_file}")
+    print(f"   File exists: {os.path.exists(job_output_file)}")
+    if os.path.exists(job_output_file):
+        file_size = os.path.getsize(job_output_file)
+        print(f"   File size: {file_size} bytes")
+    
     if not os.path.exists(job_output_file):
         await update.message.reply_text(
             f"📄 No results file found for job {job_id}.\n"
+            f"Expected location: {job_output_file}\n"
             "The processing may not have started yet or no results have been generated."
         )
         return

@@ -5,6 +5,7 @@ import json
 import threading
 import concurrent.futures
 import random
+import requests
 from DrissionPage import ChromiumPage, ChromiumOptions, Chromium
 
 # Detect operating system and set paths accordingly
@@ -14,6 +15,79 @@ def get_base_path():
     return os.path.dirname(os.path.abspath(__file__))
 
 BASE_PATH = get_base_path()
+
+def get_ip_address(proxy_info=None):
+    """Get current IP address, optionally through a proxy"""
+    try:
+        if proxy_info:
+            # Use proxy for IP check
+            proxy_url = f"http://{proxy_info['username']}:{proxy_info['password']}@{proxy_info['host']}:{proxy_info['port']}"
+            proxies = {
+                'http': proxy_url,
+                'https': proxy_url
+            }
+            response = requests.get('https://httpbin.org/ip', proxies=proxies, timeout=10)
+        else:
+            # Direct connection
+            response = requests.get('https://httpbin.org/ip', timeout=10)
+        
+        if response.status_code == 200:
+            ip_data = response.json()
+            return ip_data.get('origin', 'Unknown')
+        else:
+            return f"Error: {response.status_code}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def test_proxy_connection(proxy_info, proxy_index):
+    """Test proxy connection and return IP information"""
+    print(f"🔍 Testing proxy {proxy_index + 1}: {proxy_info['host']}:{proxy_info['port']}")
+    
+    # Test proxy IP
+    proxy_ip = get_ip_address(proxy_info)
+    
+    if "Error" not in proxy_ip:
+        print(f"✅ Proxy {proxy_index + 1} IP: {proxy_ip}")
+        return True, proxy_ip
+    else:
+        print(f"❌ Proxy {proxy_index + 1} failed: {proxy_ip}")
+        return False, proxy_ip
+
+def validate_and_test_proxies(proxies):
+    """Test all proxies and return working ones with their IPs"""
+    if not proxies:
+        print("No proxies to test")
+        return []
+    
+    print(f"\n🧪 Testing {len(proxies)} proxies...")
+    print("=" * 60)
+    
+    # Get your real IP first
+    print("🌐 Getting your real IP address...")
+    real_ip = get_ip_address()
+    print(f"📍 Your real IP: {real_ip}")
+    print("=" * 60)
+    
+    working_proxies = []
+    
+    for i, proxy in enumerate(proxies):
+        success, ip = test_proxy_connection(proxy, i)
+        if success:
+            proxy['tested_ip'] = ip
+            working_proxies.append(proxy)
+        
+        # Small delay between tests
+        time.sleep(1)
+    
+    print("=" * 60)
+    print(f"✅ {len(working_proxies)} out of {len(proxies)} proxies are working")
+    
+    if working_proxies:
+        print("\n📋 Working proxies summary:")
+        for i, proxy in enumerate(working_proxies):
+            print(f"   Proxy {i + 1}: {proxy['host']}:{proxy['port']} → IP: {proxy['tested_ip']}")
+    
+    return working_proxies
 
 def load_config():
     """Load configuration from config.json"""
@@ -44,6 +118,12 @@ def get_default_config():
             "delay_between_phones": 1
         },
         "proxy": {
+            "use_rotating_proxies": True,
+            "proxy_file": "proxies.txt",
+            "rotation": {
+                "min_requests": 3,
+                "max_requests": 8
+            },
             "username": "r_c7c72217b5-country-de-sid-bhf5f598",
             "password": "9871a9d8a9",
             "host": "v2.proxyempire.io",
@@ -63,8 +143,29 @@ def get_default_config():
 
 def load_proxies(config):
     """Load rotating proxies from file"""
-    if not config['proxy']['use_rotating_proxies']:
-        return []
+    if not config['proxy'].get('use_rotating_proxies', False):
+        # Check if we should use the static proxy from config
+        if all(config['proxy'].get(key) for key in ['host', 'port', 'username', 'password']):
+            print("Using static proxy from configuration...")
+            static_proxy = {
+                'host': config['proxy']['host'],
+                'port': config['proxy']['port'],
+                'username': config['proxy']['username'],
+                'password': config['proxy']['password']
+            }
+            
+            # Test the static proxy
+            print("🧪 Testing static proxy...")
+            success, ip = test_proxy_connection(static_proxy, 0)
+            if success:
+                static_proxy['tested_ip'] = ip
+                return [static_proxy]
+            else:
+                print("❌ Static proxy failed, running without proxy")
+                return []
+        else:
+            print("No proxy configuration found, running without proxy")
+            return []
     
     proxy_file = os.path.join(BASE_PATH, config['proxy']['proxy_file'])
     proxies = []
@@ -84,13 +185,36 @@ def load_proxies(config):
                         }
                         proxies.append(proxy)
         
-        print(f"Loaded {len(proxies)} rotating proxies from {proxy_file}")
-        return proxies
+        print(f"📁 Loaded {len(proxies)} proxies from {proxy_file}")
+        
+        # Test all proxies and return only working ones
+        working_proxies = validate_and_test_proxies(proxies)
+        return working_proxies
+        
     except FileNotFoundError:
-        print(f"Proxy file not found: {proxy_file}")
+        print(f"❌ Proxy file not found: {proxy_file}")
+        # Fall back to static proxy if configured
+        if all(config['proxy'].get(key) for key in ['host', 'port', 'username', 'password']):
+            print("Falling back to static proxy from configuration...")
+            static_proxy = {
+                'host': config['proxy']['host'],
+                'port': config['proxy']['port'],
+                'username': config['proxy']['username'],
+                'password': config['proxy']['password']
+            }
+            
+            # Test the static proxy
+            print("🧪 Testing static proxy...")
+            success, ip = test_proxy_connection(static_proxy, 0)
+            if success:
+                static_proxy['tested_ip'] = ip
+                return [static_proxy]
+            else:
+                print("❌ Static proxy failed, running without proxy")
+                return []
         return []
     except Exception as e:
-        print(f"Error loading proxies: {e}")
+        print(f"❌ Error loading proxies: {e}")
         return []
 
 class ProxyRotator:
@@ -101,11 +225,17 @@ class ProxyRotator:
         self.worker_id = worker_id
         self.current_proxy_index = worker_id % len(proxies) if proxies else 0
         self.requests_with_current_proxy = 0
+        
+        # Safe access to rotation config
+        rotation_config = config['proxy'].get('rotation', {'min_requests': 3, 'max_requests': 8})
         self.max_requests_for_current_proxy = random.randint(
-            config['proxy']['rotation']['min_requests'],
-            config['proxy']['rotation']['max_requests']
+            rotation_config['min_requests'],
+            rotation_config['max_requests']
         )
-        print(f"[Worker {worker_id}] Proxy rotator initialized - will use proxy {self.current_proxy_index} for {self.max_requests_for_current_proxy} requests")
+        
+        current_proxy = self.get_current_proxy()
+        proxy_info = f"{current_proxy['host']}:{current_proxy['port']} (IP: {current_proxy.get('tested_ip', 'Unknown')})" if current_proxy else "None"
+        print(f"[Worker {worker_id}] 🔄 Proxy rotator initialized - using proxy {self.current_proxy_index + 1}: {proxy_info} for {self.max_requests_for_current_proxy} requests")
     
     def get_current_proxy(self):
         """Get the current proxy for this worker"""
@@ -123,15 +253,25 @@ class ProxyRotator:
             return
         
         old_index = self.current_proxy_index
+        old_proxy = self.proxies[old_index]
+        
         # Move to next proxy, with some randomization
         self.current_proxy_index = (self.current_proxy_index + random.randint(1, 3)) % len(self.proxies)
         self.requests_with_current_proxy = 0
+        
+        # Safe access to rotation config
+        rotation_config = self.config['proxy'].get('rotation', {'min_requests': 3, 'max_requests': 8})
         self.max_requests_for_current_proxy = random.randint(
-            self.config['proxy']['rotation']['min_requests'],
-            self.config['proxy']['rotation']['max_requests']
+            rotation_config['min_requests'],
+            rotation_config['max_requests']
         )
         
-        print(f"[Worker {self.worker_id}] Rotated proxy from index {old_index} to {self.current_proxy_index} - will use for {self.max_requests_for_current_proxy} requests")
+        new_proxy = self.proxies[self.current_proxy_index]
+        
+        print(f"[Worker {self.worker_id}] 🔄 Rotated proxy:")
+        print(f"   From: {old_proxy['host']}:{old_proxy['port']} (IP: {old_proxy.get('tested_ip', 'Unknown')})")
+        print(f"   To: {new_proxy['host']}:{new_proxy['port']} (IP: {new_proxy.get('tested_ip', 'Unknown')})")
+        print(f"   Will use for {self.max_requests_for_current_proxy} requests")
     
     def increment_request_count(self):
         """Increment request count and rotate if needed"""
@@ -218,7 +358,7 @@ def create_proxy_auth_extension(proxy_info, worker_id=0):
     with open(background_path, 'w') as background_file:
         background_file.write(background_js)
     
-    print(f"[Worker {worker_id}] Proxy auth extension created with proxy {proxy_info['host']}:{proxy_info['port']}")
+    print(f"[Worker {worker_id}] 🌐 Proxy auth extension created with proxy {proxy_info['host']}:{proxy_info['port']} (IP: {proxy_info.get('tested_ip', 'Unknown')})")
     return directory_name
 
 def read_phone_numbers(config):
