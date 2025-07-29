@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from telegram.constants import ParseMode
 import tempfile
 import shutil
-from main import main as run_doctolib_bot, load_config, get_base_path
+from main import main as run_doctolib_bot, load_config, get_base_path, calculate_optimal_workers_and_batch_size, calculate_dynamic_delays
 
 # Import shared locks from main.py to avoid conflicts
 try:
@@ -470,8 +470,8 @@ def validate_main_dependencies():
         print(f"❌ Error importing required functions from main.py: {e}")
         return False
 
-def process_phone_batch_with_termination(phone_batch, worker_id, config, job_id):
-    """Process a batch of phone numbers with termination support"""
+def process_phone_batch_with_termination(phone_batch, worker_id, config, job_id, delays):
+    """Process a batch of phone numbers with termination support and dynamic delays"""
     try:
         # Import the function from main.py but with termination checking
         import concurrent.futures
@@ -501,7 +501,7 @@ def process_phone_batch_with_termination(phone_batch, worker_id, config, job_id)
             # Process single phone (we'll need to modify main.py to support this)
             try:
                 # For now, call the batch function with single phone
-                single_result = process_phone_batch([phone], worker_id, config)
+                single_result = process_phone_batch([phone], worker_id, config, delays)
                 results.extend(single_result)
                 
                 # Small delay and termination check
@@ -670,6 +670,34 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
         job_config['files']['phone_numbers_file'] = f"results/phone_numbers_{job_id}.txt"
         job_config['files']['output_file'] = f"results/downloadable_{job_id}.txt"
         
+        # Apply intelligent scaling for this job
+        total_phones = len(phone_numbers)
+        print(f"🧠 Applying intelligent scaling for {total_phones:,} phone numbers...")
+        
+        if job_config['multiprocessing'].get('auto_scale', True):
+            optimal_workers, optimal_phones_per_worker = calculate_optimal_workers_and_batch_size(total_phones)
+            
+            # Apply safety limits
+            max_worker_limit = job_config['multiprocessing'].get('max_worker_limit', 130)
+            optimal_workers = min(optimal_workers, max_worker_limit)
+            
+            # Override config with optimal values
+            job_config['multiprocessing']['max_workers'] = optimal_workers
+            job_config['multiprocessing']['phones_per_worker'] = optimal_phones_per_worker
+            
+            print(f"✅ Auto-scaling applied:")
+            print(f"   🤖 Workers: {optimal_workers} (limit: {max_worker_limit})")
+            print(f"   📱 Phones per worker: {optimal_phones_per_worker}")
+            
+            # Update active job info
+            active_jobs[job_id]['auto_scaled'] = True
+            active_jobs[job_id]['optimal_workers'] = optimal_workers
+            active_jobs[job_id]['optimal_phones_per_worker'] = optimal_phones_per_worker
+        
+        # Calculate dynamic delays based on dataset size
+        delays = calculate_dynamic_delays(total_phones)
+        active_jobs[job_id]['delays'] = delays
+        
         # Debug: Print the full paths being used
         print(f"🔍 Debug - Job {job_id} file paths:")
         print(f"   Phone file: {job_phone_file}")
@@ -703,7 +731,7 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
             with concurrent.futures.ThreadPoolExecutor(max_workers=job_config['multiprocessing']['max_workers']) as executor:
                 # Submit all batches with termination support
                 future_to_batch = {
-                    executor.submit(process_phone_batch_with_termination, batch, i, job_config, job_id): i 
+                    executor.submit(process_phone_batch_with_termination, batch, i, job_config, job_id, delays): i 
                     for i, batch in enumerate(phone_batches)
                 }
                 

@@ -1,22 +1,28 @@
 {
     "multiprocessing": {
         "enabled": true,
-        "max_workers": 3,
-        "phones_per_worker": 10
+        "auto_scale": true,
+        "max_workers": 20,
+        "phones_per_worker": 10,
+        "max_worker_limit": 130
     },
     "browser": {
         "headless": true,
         "timeout": 30,
-        "delay_between_phones": 1
+        "delay_between_phones": 1,
+        "human_behavior": true
     },
     "proxy": {
         "use_rotating_proxies": true,
         "proxy_file": "proxies.txt",
         "rotation": {
-            "min_requests": 20,
-            "max_requests": 30,
-            "per_worker": true
-        }
+            "min_requests": 3,
+            "max_requests": 8
+        },
+        "username": "r_c7c72217b5-country-de-sid-bhf5f598",
+        "password": "9871a9d8a9",
+        "host": "v2.proxyempire.io",
+        "port": "5000"
     },
     "files": {
         "phone_numbers_file": "results/phone_numbers.txt",
@@ -26,7 +32,7 @@
     },
     "debug": {
         "enable_screenshots": false,
-        "verbose_logging": false
+        "verbose_logging": true
     },
     "telegram": {
         "bot_token": "8028132470:AAFMfGnKtoI5tKIduZb3DFtArTYSQjpAzcE",

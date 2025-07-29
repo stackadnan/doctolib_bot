@@ -104,18 +104,113 @@ def load_config():
         print(f"Error loading config: {e}. Using default configuration.")
         return get_default_config()
 
+def calculate_optimal_workers_and_batch_size(total_phone_numbers):
+    """
+    Intelligently calculate optimal number of workers and phones per worker
+    based on total phone numbers to process efficiently while staying within limits
+    """
+    if total_phone_numbers <= 0:
+        return 1, 1
+    
+    # Define scaling rules based on total phone numbers
+    if total_phone_numbers <= 100:
+        # Small datasets: 1-10 workers, 10-20 phones per worker
+        workers = min(10, max(1, total_phone_numbers // 10))
+        phones_per_worker = max(10, total_phone_numbers // workers)
+    elif total_phone_numbers <= 1000:
+        # Medium datasets: 10-50 workers, 20-50 phones per worker
+        workers = min(50, max(10, total_phone_numbers // 20))
+        phones_per_worker = max(20, total_phone_numbers // workers)
+    elif total_phone_numbers <= 10000:
+        # Large datasets: 50-100 workers, 50-100 phones per worker
+        workers = min(100, max(50, total_phone_numbers // 100))
+        phones_per_worker = max(50, total_phone_numbers // workers)
+    elif total_phone_numbers <= 100000:
+        # Very large datasets: 100-130 workers, 500-1000 phones per worker
+        workers = min(130, max(100, total_phone_numbers // 750))
+        phones_per_worker = max(500, total_phone_numbers // workers)
+    else:
+        # Massive datasets: Maximum 130 workers, scale phones per worker
+        workers = 130
+        phones_per_worker = max(750, total_phone_numbers // workers)
+    
+    # Ensure we don't exceed realistic limits
+    workers = min(workers, total_phone_numbers)
+    phones_per_worker = max(1, total_phone_numbers // workers)
+    
+    print(f"📊 Intelligent scaling for {total_phone_numbers:,} phone numbers:")
+    print(f"   🤖 Optimal workers: {workers}")
+    print(f"   📱 Phones per worker: {phones_per_worker}")
+    print(f"   📈 Efficiency ratio: {total_phone_numbers / (workers * phones_per_worker):.2f}")
+    
+    return workers, phones_per_worker
+
+def calculate_dynamic_delays(total_phone_numbers):
+    """
+    Calculate dynamic delays based on dataset size to mimic human behavior
+    Returns delays in seconds with randomization ranges
+    """
+    if total_phone_numbers <= 1000:
+        # Small datasets: Normal speed
+        base_delay = 1.0
+        randomization = 0.3  # ±0.3 seconds
+        captcha_wait = 60
+        page_load_wait = 3
+    elif total_phone_numbers <= 10000:
+        # Medium datasets: Slightly slower
+        base_delay = 1.5
+        randomization = 0.5  # ±0.5 seconds
+        captcha_wait = 75
+        page_load_wait = 4
+    elif total_phone_numbers <= 100000:
+        # Large datasets: More human-like delays
+        base_delay = 2.0
+        randomization = 0.8  # ±0.8 seconds
+        captcha_wait = 90
+        page_load_wait = 5
+    else:
+        # Massive datasets: Very human-like behavior
+        base_delay = 3.0
+        randomization = 1.2  # ±1.2 seconds
+        captcha_wait = 120
+        page_load_wait = 6
+    
+    delays = {
+        'base_delay': base_delay,
+        'randomization': randomization,
+        'captcha_wait': captcha_wait,
+        'page_load_wait': page_load_wait,
+        'input_delay': random.uniform(0.5, 1.5),
+        'button_click_delay': random.uniform(0.8, 2.0),
+        'popup_dismiss_delay': random.uniform(0.5, 1.0)
+    }
+    
+    print(f"⏱️ Dynamic delays for {total_phone_numbers:,} phone numbers:")
+    print(f"   🕐 Base delay: {base_delay}s (±{randomization}s)")
+    print(f"   🔄 CAPTCHA wait: {captcha_wait}s")
+    print(f"   📄 Page load wait: {page_load_wait}s")
+    
+    return delays
+
+def get_random_delay(base_delay, randomization):
+    """Get a randomized delay within the specified range"""
+    return max(0.1, random.uniform(base_delay - randomization, base_delay + randomization))
+
 def get_default_config():
     """Return default configuration if config file is not found"""
     return {
         "multiprocessing": {
             "enabled": True,
-            "max_workers": 3,
-            "phones_per_worker": 10
+            "auto_scale": True,  # Enable automatic scaling
+            "max_workers": 3,  # Will be overridden by auto-scaling
+            "phones_per_worker": 10,  # Will be overridden by auto-scaling
+            "max_worker_limit": 130  # Hard limit for safety
         },
         "browser": {
             "headless": False,
             "timeout": 30,
-            "delay_between_phones": 1
+            "delay_between_phones": 1,  # Will be overridden by dynamic delays
+            "human_behavior": True  # Enable human-like behavior
         },
         "proxy": {
             "use_rotating_proxies": True,
@@ -376,14 +471,75 @@ def read_phone_numbers(config):
         print(f"Error reading phone numbers file: {e}")
         return []
 
-def load_initial_page(dp, url):
-    """Load the page for the first time"""
+def dismiss_popup_or_modal(dp, worker_id, delays=None):
+    """Try multiple methods to dismiss popups or modals with human-like delays"""
+    print(f"[Worker {worker_id}] Attempting to dismiss any popups/modals...")
+    
+    if delays is None:
+        delays = {'popup_dismiss_delay': 1.0, 'randomization': 0.3}
+    
+    # Method 1: Try clicking common close button selectors
+    close_selectors = [
+        'css:button[aria-label="Close"]',
+        'css:.close',
+        'css:.modal-close',
+        'css:.popup-close',
+        'xpath://button[contains(text(), "Close") or contains(text(), "Schließen")]',
+        'css:button[title="Close"]',
+        'css:.fa-times',
+        'css:.fa-close'
+    ]
+    
+    for selector in close_selectors:
+        try:
+            close_button = dp.ele(selector, timeout=1)
+            if close_button:
+                print(f"[Worker {worker_id}] Found close button with selector: {selector}")
+                close_button.click()
+                dismiss_delay = get_random_delay(delays['popup_dismiss_delay'], delays['randomization'])
+                time.sleep(dismiss_delay)
+                return True
+        except:
+            continue
+    
+    # Method 2: Try pressing Escape key
+    try:
+        print(f"[Worker {worker_id}] Trying Escape key...")
+        dp.key.press('Escape')
+        dismiss_delay = get_random_delay(delays['popup_dismiss_delay'], delays['randomization'])
+        time.sleep(dismiss_delay)
+        return True
+    except:
+        pass
+    
+    # Method 3: Click somewhere neutral on the page (outside any modal)
+    try:
+        print(f"[Worker {worker_id}] Clicking outside modal area...")
+        # Click in multiple locations to ensure we hit outside the modal
+        dp.click(100, 100)  # Top-left
+        small_delay = get_random_delay(0.3, 0.1)
+        time.sleep(small_delay)
+        dp.click(dp.size[0] - 100, 100)  # Top-right  
+        dismiss_delay = get_random_delay(delays['popup_dismiss_delay'], delays['randomization'])
+        time.sleep(dismiss_delay)
+        return True
+    except Exception as e:
+        print(f"[Worker {worker_id}] Could not dismiss popup: {e}")
+        return False
+
+def load_initial_page(dp, url, delays=None):
+    """Load the page for the first time with dynamic delays"""
     print(f"Loading initial page: {url}")
     dp.get(url)
 
-    # Wait for page to load completely
-    print("Waiting for initial page to load...")
-    time.sleep(5)
+    # Wait for page to load completely with dynamic delay
+    if delays:
+        load_delay = get_random_delay(delays['page_load_wait'], delays['randomization'])
+        print(f"Waiting {load_delay:.1f}s for initial page to load...")
+        time.sleep(load_delay)
+    else:
+        print("Waiting for initial page to load...")
+        time.sleep(5)
 
     # Check if page loaded successfully
     if "doctolib" in dp.url.lower():
@@ -393,8 +549,8 @@ def load_initial_page(dp, url):
         print(f"Warning: May not have loaded correctly. Current URL: {dp.url}")
         return False
 
-def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_first_load=False):
-    """Process a single phone number"""
+def process_phone_number(dp, phone_number, phone_index, config, worker_id, delays, is_first_load=False):
+    """Process a single phone number with dynamic delays"""
     url = 'https://www.doctolib.de/authn/patient/realms/doctolib-patient/protocol/openid-connect/registrations?client_id=patient-de-client&context=navigation_bar&esid=utltfamkbuRkzGVkQ3K8kz_m&from=%2Fsessions%2Fnew%3Fcontext%3Dnavigation_bar&nonce=b1a6c0a5100b9c9fb7e92a8adf341f30&redirect_uri=https%3A%2F%2Fwww.doctolib.de%2Fauth%2Fpatient_de%2Fcallback&response_type=code&scope=openid+email&ssid=c138000win-cA1Yckyz62yC&state=4e29a9bacc124be9ee4a4781da33c438&ui_locales=de#step-username_sign_up'
     
     print(f"\n[Worker {worker_id}] {'='*60}")
@@ -404,24 +560,48 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
     try:
         # Only navigate to URL on first load
         if is_first_load:
-            if not load_initial_page(dp, url):
+            if not load_initial_page(dp, url, delays):
                 return False, None
         else:
-            # For subsequent numbers, just refresh the form or navigate back to input
-            print(f"[Worker {worker_id}] Navigating back to phone input form...")
-            try:
-                # Try to go back to the phone input step
-                dp.back()
-                time.sleep(2)
-                # If back doesn't work, reload the page
-                if 'step-username_sign_up' not in dp.url:
-                    print(f"[Worker {worker_id}] Back navigation failed, reloading page...")
+            # For subsequent numbers, check current page state and navigate appropriately
+            print(f"[Worker {worker_id}] Preparing for next phone number...")
+            current_url = dp.url
+            print(f"[Worker {worker_id}] Current URL: {current_url}")
+            
+            # If we're still on a registration-related page, try going back first
+            if 'step-username_sign_up' in current_url:
+                print(f"[Worker {worker_id}] Already on phone input page, refreshing...")
+                try:
+                    dp.refresh()
+                    human_delay = get_random_delay(delays['page_load_wait'], delays['randomization'])
+                    print(f"[Worker {worker_id}] Waiting {human_delay:.1f}s for page refresh...")
+                    time.sleep(human_delay)
+                except Exception as e:
+                    print(f"[Worker {worker_id}] Refresh failed, reloading page: {e}")
                     dp.get(url)
-                    time.sleep(3)
-            except:
-                print(f"[Worker {worker_id}] Navigation issue, reloading page...")
-                dp.get(url)
-                time.sleep(3)
+                    human_delay = get_random_delay(delays['page_load_wait'], delays['randomization'])
+                    time.sleep(human_delay)
+            else:
+                print(f"[Worker {worker_id}] Not on phone input page, navigating back or reloading...")
+                try:
+                    # Try to go back to the phone input step
+                    dp.back()
+                    human_delay = get_random_delay(delays['page_load_wait'], delays['randomization'])
+                    time.sleep(human_delay)
+                    
+                    # Check if we're now on the right page
+                    if 'step-username_sign_up' not in dp.url:
+                        print(f"[Worker {worker_id}] Back navigation didn't reach phone input, reloading page...")
+                        dp.get(url)
+                        human_delay = get_random_delay(delays['page_load_wait'], delays['randomization'])
+                        time.sleep(human_delay)
+                    else:
+                        print(f"[Worker {worker_id}] Successfully navigated back to phone input page")
+                except Exception as e:
+                    print(f"[Worker {worker_id}] Navigation issue, reloading page: {e}")
+                    dp.get(url)
+                    human_delay = get_random_delay(delays['page_load_wait'], delays['randomization'])
+                    time.sleep(human_delay)
 
         # Take a screenshot for debugging (if enabled)
         if config['debug']['enable_screenshots']:
@@ -460,25 +640,43 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
             print(f"[Worker {worker_id}] Could not find the phone input field. Please check the page structure.")
             return False, None
 
-        # Clear the input field and enter the new phone number
-        time.sleep(2)
+        # Clear the input field and enter the new phone number with human-like delays
+        human_input_delay = get_random_delay(delays['input_delay'], delays['randomization'])
+        print(f"[Worker {worker_id}] Waiting {human_input_delay:.1f}s before input (human behavior)...")
+        time.sleep(human_input_delay)
+        
         try:
             # Clear any existing content
             phone_element.clear()
-            time.sleep(1)
+            small_delay = get_random_delay(0.5, 0.2)
+            time.sleep(small_delay)
         except:
             # If clear doesn't work, try selecting all and deleting
             try:
                 phone_element.click()
                 phone_element.input('\b' * 20)  # Send multiple backspaces
-                time.sleep(1)
+                small_delay = get_random_delay(0.5, 0.2)
+                time.sleep(small_delay)
             except:
                 pass
         
-        # Enter the phone number
-        phone_element.input(phone_number)
-        print(f"[Worker {worker_id}] Phone number entered successfully: {phone_number}")
-        time.sleep(2)
+        # Enter the phone number with human-like typing simulation
+        if config['browser'].get('human_behavior', True) and len(phone_number) > 5:
+            # Type the phone number character by character with small delays for very large datasets
+            for i, char in enumerate(phone_number):
+                phone_element.input(char)
+                if i < len(phone_number) - 1:  # Don't delay after the last character
+                    typing_delay = random.uniform(0.05, 0.15)  # 50-150ms between characters
+                    time.sleep(typing_delay)
+            print(f"[Worker {worker_id}] Phone number typed with human simulation: {phone_number}")
+        else:
+            # Normal input for smaller datasets
+            phone_element.input(phone_number)
+            print(f"[Worker {worker_id}] Phone number entered: {phone_number}")
+        
+        # Human-like pause after entering phone number
+        post_input_delay = get_random_delay(1.0, 0.3)
+        time.sleep(post_input_delay)
 
         # Find and click the "Further" or "Weiter" button
         button = None
@@ -513,7 +711,7 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
             captcha_element = dp.ele('css:.frc-captcha', timeout=3)
             if captcha_element:
                 print(f"[Worker {worker_id}] CAPTCHA detected! Waiting for completion...")
-                max_captcha_wait = 60
+                max_captcha_wait = delays['captcha_wait']
                 for i in range(max_captcha_wait):
                     try:
                         progress_element = dp.ele('css:.frc-progress', timeout=1)
@@ -533,8 +731,10 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
         except:
             print(f"[Worker {worker_id}] No CAPTCHA detected")
 
-        # Wait a bit more for any dynamic updates
-        time.sleep(3)
+        # Wait a bit more for any dynamic updates with human-like delay
+        dynamic_wait = get_random_delay(delays['page_load_wait'], delays['randomization'])
+        print(f"[Worker {worker_id}] Waiting {dynamic_wait:.1f}s for page updates...")
+        time.sleep(dynamic_wait)
 
         # Check if button is enabled before clicking
         try:
@@ -550,13 +750,19 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
         except:
             pass
 
+        # Human-like delay before clicking button
+        button_delay = get_random_delay(delays['button_click_delay'], delays['randomization'])
+        print(f"[Worker {worker_id}] Waiting {button_delay:.1f}s before clicking button (human behavior)...")
+        time.sleep(button_delay)
+        
         print(f"[Worker {worker_id}] Attempting to click the button...")
         button.click()
         print(f"[Worker {worker_id}] Button clicked successfully!")
 
-        # Enhanced registration detection
+        # Enhanced registration detection with dynamic waiting
         print(f"[Worker {worker_id}] Waiting for page response...")
-        time.sleep(5)
+        initial_wait = get_random_delay(delays['page_load_wait'], delays['randomization'])
+        time.sleep(initial_wait)
 
         registration_detected = False
         registration_status = None  # Will be 'registered', 'not_registered', or None
@@ -566,7 +772,10 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
             try:
                 if config['debug']['verbose_logging']:
                     print(f"[Worker {worker_id}] Checking registration status (attempt {attempt + 1}/{max_attempts})...")
-                time.sleep(3)
+                
+                # Use dynamic delays for checking intervals
+                check_delay = get_random_delay(2.0, 0.5)
+                time.sleep(check_delay)
 
                 current_url = dp.url
                 current_title = dp.title.lower()
@@ -592,7 +801,15 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
                         'diese telefonnummer ist bereits',
                         'this phone number is already',
                         'nummer ist bereits registriert',
-                        'number is already registered'
+                        'number is already registered',
+                        'telefonnummer bereits verwendet',
+                        'phone number already used',
+                        'konto bereits vorhanden',
+                        'account already exists',
+                        'mit dieser nummer',
+                        'with this number',
+                        'bereits ein konto',
+                        'already an account'
                     ]
                     
                     not_registered_keywords = [
@@ -620,6 +837,21 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
                             print(f"[Worker {worker_id}] Number ALREADY registered - The phone number is already registered with Doctolib.")
                             registration_detected = True
                             registration_status = 'registered'
+                            
+                            # For "already registered", it's usually a popup - try to dismiss it
+                            if dismiss_popup_or_modal(dp, worker_id, delays):
+                                print(f"[Worker {worker_id}] Successfully dismissed registration popup")
+                                # Wait a moment and verify we're still on the phone input page
+                                verify_delay = get_random_delay(delays['popup_dismiss_delay'], delays['randomization'])
+                                time.sleep(verify_delay)
+                                current_url_after_dismiss = dp.url
+                                if 'step-username_sign_up' in current_url_after_dismiss:
+                                    print(f"[Worker {worker_id}] Confirmed: Still on phone input page after popup dismissal")
+                                else:
+                                    print(f"[Worker {worker_id}] Warning: Page changed after popup dismissal. Current URL: {current_url_after_dismiss}")
+                            else:
+                                print(f"[Worker {worker_id}] Could not dismiss popup, will continue anyway")
+                            
                             break
                     
                     # If not already registered, check for "not registered" indicators
@@ -630,6 +862,16 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
                                 print(f"[Worker {worker_id}] Number NOT registered - The phone number is not registered with Doctolib.")
                                 registration_detected = True
                                 registration_status = 'not_registered'
+                                
+                                # For "not registered", it's a new page - use back button to return
+                                print(f"[Worker {worker_id}] Going back to phone input page...")
+                                try:
+                                    dp.back()
+                                    time.sleep(3)
+                                    print(f"[Worker {worker_id}] Successfully navigated back")
+                                except Exception as e:
+                                    print(f"[Worker {worker_id}] Could not navigate back: {e}")
+                                
                                 break
 
                 except Exception as e:
@@ -638,7 +880,6 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
                 # If we found a definitive answer, break immediately
                 if registration_detected:
                     break
-
                 # Only check for page transitions if no keywords were found
                 if 'telefonnummer ein' in current_title or 'phone number' in current_title:
                     if config['debug']['verbose_logging']:
@@ -677,9 +918,10 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, is_fi
         print(f"[Worker {worker_id}] Error processing phone number {phone_number}: {e}")
         return False, None
 
-def process_phone_batch(phone_batch, worker_id, config):
-    """Process a batch of phone numbers in a single worker"""
+def process_phone_batch(phone_batch, worker_id, config, delays):
+    """Process a batch of phone numbers in a single worker with dynamic delays"""
     print(f"[Worker {worker_id}] Starting to process {len(phone_batch)} phone numbers")
+    print(f"[Worker {worker_id}] Using delays: Base={delays['base_delay']:.1f}s, Random=±{delays['randomization']:.1f}s")
     
     # Load proxies and setup rotation for this worker
     proxies = load_proxies(config)
@@ -793,7 +1035,7 @@ def process_phone_batch(phone_batch, worker_id, config):
         is_first_load = (index == 0) or (proxy_rotator and proxy_rotator.requests_with_current_proxy == 0)
         phone_index = f"W{worker_id}-{index+1}"
         
-        success, status = process_phone_number(dp, phone_number, phone_index, config, worker_id, is_first_load)
+        success, status = process_phone_number(dp, phone_number, phone_index, config, worker_id, delays, is_first_load)
         
         # Increment proxy request count
         if proxy_rotator:
@@ -808,10 +1050,11 @@ def process_phone_batch(phone_batch, worker_id, config):
         }
         worker_results.append(result)
         
-        # Add delay between numbers
+        # Add dynamic delay between numbers based on dataset size
         if index < len(phone_batch) - 1:
-            print(f"[Worker {worker_id}] Waiting {config['browser']['delay_between_phones']}s before processing next number...")
-            time.sleep(config['browser']['delay_between_phones'])
+            between_phones_delay = get_random_delay(delays['base_delay'], delays['randomization'])
+            print(f"[Worker {worker_id}] Waiting {between_phones_delay:.1f}s before processing next number (human behavior)...")
+            time.sleep(between_phones_delay)
     
     # Close browser
     try:
@@ -931,6 +1174,33 @@ def main():
     if not phone_numbers:
         print("No phone numbers loaded. Exiting...")
         return
+    
+    total_phones = len(phone_numbers)
+    print(f"\n📊 Dataset Analysis:")
+    print(f"   📱 Total phone numbers: {total_phones:,}")
+    
+    # Calculate intelligent scaling and dynamic delays
+    if config['multiprocessing'].get('auto_scale', True):
+        optimal_workers, optimal_phones_per_worker = calculate_optimal_workers_and_batch_size(total_phones)
+        
+        # Apply safety limits
+        max_worker_limit = config['multiprocessing'].get('max_worker_limit', 130)
+        optimal_workers = min(optimal_workers, max_worker_limit)
+        
+        # Override config with optimal values
+        config['multiprocessing']['max_workers'] = optimal_workers
+        config['multiprocessing']['phones_per_worker'] = optimal_phones_per_worker
+        
+        print(f"🤖 Auto-scaling enabled:")
+        print(f"   Workers: {config['multiprocessing']['max_workers']} (limit: {max_worker_limit})")
+        print(f"   Phones per worker: {config['multiprocessing']['phones_per_worker']}")
+    else:
+        print(f"⚙️ Manual scaling:")
+        print(f"   Workers: {config['multiprocessing']['max_workers']}")
+        print(f"   Phones per worker: {config['multiprocessing']['phones_per_worker']}")
+    
+    # Calculate dynamic delays based on dataset size
+    delays = calculate_dynamic_delays(total_phones)
 
     # Ensure results directory exists
     results_dir = os.path.join(BASE_PATH, 'results')
@@ -969,9 +1239,9 @@ def main():
         
         # Process batches using ThreadPoolExecutor
         with concurrent.futures.ThreadPoolExecutor(max_workers=config['multiprocessing']['max_workers']) as executor:
-            # Submit all batches
+            # Submit all batches with delays
             future_to_batch = {
-                executor.submit(process_phone_batch, batch, i, config): i 
+                executor.submit(process_phone_batch, batch, i, config, delays): i 
                 for i, batch in enumerate(phone_batches)
             }
             
