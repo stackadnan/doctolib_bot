@@ -388,7 +388,7 @@ def send_partial_results_message_sync(chat_id, job_id, output_file, bot_applicat
             f"• Unknown Status: {len(unknown_numbers)}\n\n"
             f"⏱ Processing Time: {duration}\n"
             f"🔄 All Chrome instances have been closed\n\n"
-            f"📎 Download your partial results below:"
+            # f"📎 Download your partial results below:"
         )
         
         # Send summary message
@@ -469,7 +469,7 @@ def send_completion_message_sync(chat_id, job_id, output_file, bot_application):
             f"• Unknown Status: {len(unknown_numbers)}\n"
             f"• Total Processed: {len(lines)}\n\n"
             f"⏱ Processing Time: {duration}\n\n"
-            f"📎 Download your results below:"
+            # f"📎 Download your results below:"
         )
         
         # Send summary message
@@ -1001,7 +1001,7 @@ async def send_completion_message(chat_id, job_id, output_file, bot_application)
             f"• Unknown Status: {unknown_count}\n"
             f"• Total Processed: {len(lines)}\n\n"
             f"⏱ *Processing Time:* {duration}\n\n"
-            f"📎 *Download your results below:*"
+            # f"📎 *Download your results below:*"
         )
         
         # Send summary message
@@ -1060,7 +1060,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "📁 *Commands:*\n"
         "• /start - Show this welcome message\n"
         "• /status - Check current job status\n"
-        "• /download - Download current/partial results\n"
+        # "• /download - Download current/partial results\n"
         "• /stop - Stop running job process\n"
         "• /help - Get detailed help\n\n"
         "📤 *Ready to start? Send me your phone_numbers.txt file!*"
@@ -1110,7 +1110,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*Commands:*\n"
         "• `/start` - Show welcome message\n"
         "• `/status` - Check job status and progress\n"
-        "• `/download` - Get current results (even if job is still running)\n"
+        # "• `/download` - Get current results (even if job is still running)\n"
         "• `/stop` - Stop your running job and get partial results\n"
         "• `/help` - Show this help message\n"
         f"{display_commands}\n"

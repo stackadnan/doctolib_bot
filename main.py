@@ -115,7 +115,7 @@ def calculate_optimal_workers_and_batch_size(total_phone_numbers):
     # Define scaling rules based on total phone numbers
     if total_phone_numbers <= 100:
         # Small datasets: 1 worker only
-        workers = 1
+        workers = 30
         phones_per_worker = total_phone_numbers
     elif total_phone_numbers <= 1000:
         # Medium datasets: 10-50 workers, 20-50 phones per worker
