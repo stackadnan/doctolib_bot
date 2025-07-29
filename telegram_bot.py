@@ -5,6 +5,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from telegram.constants import ParseMode
 import tempfile
 import shutil
+import subprocess,psutil,requests
 from main import main as run_doctolib_bot, load_config, get_base_path, calculate_optimal_workers_and_batch_size, calculate_dynamic_delays
 
 # Import shared locks from main.py to avoid conflicts
@@ -12,6 +13,16 @@ try:
     from main import file_lock as shared_file_lock
 except ImportError:
     shared_file_lock = threading.Lock()
+
+# Import Celery integration (optional)
+try:
+    from celery_integration import process_phones_with_celery, get_processing_mode, is_celery_available
+    CELERY_AVAILABLE = True
+    print("✅ Celery integration loaded successfully")
+except ImportError as e:
+    CELERY_AVAILABLE = False
+    print(f"⚠️ Celery integration not available: {e}")
+    print("📝 Bot will use threading-based processing only")
 
 config_file_lock = shared_file_lock
 active_jobs = {}
@@ -585,254 +596,284 @@ def terminate_job_processes(job_id):
     except Exception as e:
         print(f"❌ Error terminating job processes: {e}")
 
-def process_doctolib_job_with_config(phone_batch, worker_id, config, job_id):
-    """Process a batch of phone numbers with custom config - wrapper for main.py function"""
-    # Import the process_phone_batch function from main.py
-    from main import process_phone_batch
-    return process_phone_batch(phone_batch, worker_id, config)
+def send_start_message(chat_id, job_id, phone_numbers, processing_mode, bot_application):
+    """Send processing started message"""
+    try:
+        mode_text = "🚀 Celery workers" if processing_mode == 'celery' else "🔄 Browser automation"
+        # Use direct HTTP request to avoid event loop issues
+        bot_token = bot_application.bot.token
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = {
+            'chat_id': chat_id,
+            'text': f"🔄 Processing started for job {job_id}\n"
+                   f"📱 Processing {len(phone_numbers)} phone numbers...\n"
+                   f"⚡ Mode: {mode_text}\n"
+                   f"⏰ This may take several minutes depending on the number of phones."
+        }
+        response = requests.post(url, data=data, timeout=10)
+        if response.status_code == 200:
+            print(f"Start message sent successfully for job {job_id}")
+        else:
+            print(f"Failed to send start message: {response.status_code}")
+    except Exception as e:
+        print(f"Error sending start message: {e}")
+
+def process_with_threading(job_id, user_id, phone_numbers_file, chat_id, bot_application, config):
+    """Process using the original threading-based approach"""
+    
+    # Validate main.py dependencies first
+    if not validate_main_dependencies():
+        raise Exception("Required dependencies from main.py are not available")
+    
+    # Get phone numbers for this job
+    phone_numbers = active_jobs[job_id]['phone_numbers']
+    
+    # Print multiprocessing configuration that will be used
+    phone_count = len(phone_numbers)
+    if config['multiprocessing']['enabled']:
+        max_workers = config['multiprocessing']['max_workers']
+        phones_per_worker = config['multiprocessing']['phones_per_worker']
+        estimated_batches = (phone_count + phones_per_worker - 1) // phones_per_worker
+        actual_workers = min(max_workers, estimated_batches)
+        
+        print(f"Job {job_id} multiprocessing configuration:")
+        print(f"  📱 Total phones: {phone_count}")
+        print(f"  🔧 Max workers: {max_workers}")
+        print(f"  📦 Phones per worker: {phones_per_worker}")
+        print(f"  🎯 Estimated batches: {estimated_batches}")
+        print(f"  ⚡ Actual workers to use: {actual_workers}")
+    else:
+        print(f"Job {job_id} will run in single-process mode (multiprocessing disabled)")
+    
+    # Ensure results directory exists
+    results_dir = os.path.join(BASE_PATH, 'results')
+    os.makedirs(results_dir, exist_ok=True)
+    
+    # Create job-specific filenames
+    job_phone_file = os.path.join(BASE_PATH, "results", f"phone_numbers_{job_id}.txt")
+    job_output_file = os.path.join(BASE_PATH, "results", f"downloadable_{job_id}.txt")
+    
+    # Copy user's phone numbers to job-specific file
+    shutil.copy2(phone_numbers_file, job_phone_file)
+    
+    # Create job-specific config without modifying global config
+    job_config = config.copy()
+    job_config['files']['phone_numbers_file'] = f"results/phone_numbers_{job_id}.txt"
+    job_config['files']['output_file'] = f"results/downloadable_{job_id}.txt"
+    
+    # Apply intelligent scaling for this job
+    total_phones = len(phone_numbers)
+    print(f"🧠 Applying intelligent scaling for {total_phones:,} phone numbers...")
+    
+    if job_config['multiprocessing'].get('auto_scale', True):
+        optimal_workers, optimal_phones_per_worker = calculate_optimal_workers_and_batch_size(total_phones)
+        
+        # Apply safety limits
+        max_worker_limit = job_config['multiprocessing'].get('max_worker_limit', 130)
+        optimal_workers = min(optimal_workers, max_worker_limit)
+        
+        # Override config with optimal values
+        job_config['multiprocessing']['max_workers'] = optimal_workers
+        job_config['multiprocessing']['phones_per_worker'] = optimal_phones_per_worker
+        
+        print(f"✅ Auto-scaling applied:")
+        print(f"   🤖 Workers: {optimal_workers} (limit: {max_worker_limit})")
+        print(f"   📱 Phones per worker: {optimal_phones_per_worker}")
+        
+        # Update active job info
+        active_jobs[job_id]['auto_scaled'] = True
+        active_jobs[job_id]['optimal_workers'] = optimal_workers
+        active_jobs[job_id]['optimal_phones_per_worker'] = optimal_phones_per_worker
+    
+    # Calculate dynamic delays based on dataset size
+    delays = calculate_dynamic_delays(total_phones)
+    active_jobs[job_id]['delays'] = delays
+    
+    # Debug: Print the full paths being used
+    print(f"🔍 Debug - Job {job_id} file paths:")
+    print(f"   Phone file: {job_phone_file}")
+    print(f"   Output file: {job_output_file}")
+    print(f"   Config output: {job_config['files']['output_file']}")
+    print(f"   Full output path: {os.path.join(BASE_PATH, job_config['files']['output_file'])}")
+    
+    # Process using the same logic as main.py but with isolated config and termination support
+    if job_config['multiprocessing']['enabled']:
+        import concurrent.futures
+        
+        # Split phone numbers into batches
+        phones_per_worker = job_config['multiprocessing']['phones_per_worker']
+        phone_batches = [phone_numbers[i:i+phones_per_worker] for i in range(0, len(phone_numbers), phones_per_worker)]
+        
+        print(f"📦 Split {len(phone_numbers)} phone numbers into {len(phone_batches)} batches")
+        
+        # Clear the output file at the start
+        with shared_file_lock:
+            try:
+                with open(job_output_file, 'w', encoding='utf-8') as f:
+                    f.write("")  # Clear the file
+                print(f"Cleared {job_output_file} for fresh start")
+            except Exception as e:
+                print(f"Could not clear {job_output_file}: {e}")
+        
+        # Process batches using ThreadPoolExecutor with termination support
+        with concurrent.futures.ThreadPoolExecutor(max_workers=job_config['multiprocessing']['max_workers']) as executor:
+            # Submit all batches with termination support
+            future_to_batch = {
+                executor.submit(process_phone_batch_with_termination, batch, i, job_config, job_id, delays): i 
+                for i, batch in enumerate(phone_batches)
+            }
+            
+            # Process completed futures and save results
+            completed_batches = 0
+            total_batches = len(phone_batches)
+            
+            for future in concurrent.futures.as_completed(future_to_batch):
+                batch_id = future_to_batch[future]
+                
+                # Check if termination was requested
+                if job_id in job_termination_flags and job_termination_flags[job_id].is_set():
+                    print(f"🛑 Job {job_id} termination detected, canceling remaining batches")
+                    # Cancel remaining futures
+                    for f in future_to_batch:
+                        if not f.done():
+                            f.cancel()
+                    break
+                
+                try:
+                    worker_results = future.result(timeout=5)  # 5 second timeout for getting results
+                    completed_batches += 1
+                    print(f"✅ Batch {batch_id + 1}/{total_batches} completed with {len(worker_results)} results")
+                    
+                    # Save results to job-specific file using direct file writing
+                    for result in worker_results:
+                        # Use direct file writing instead of save_result_to_file to ensure it goes to the right place
+                        phone_number = result['phone_number']
+                        success = result['success']
+                        status = result['status']
+                        worker_id = result['worker_id']
+                        
+                        with shared_file_lock:  # Use the shared file lock
+                            try:
+                                with open(job_output_file, 'a', encoding='utf-8') as f:
+                                    if success:
+                                        if status == 'registered':
+                                            f.write(f"{phone_number} - Registered (Worker {worker_id})\n")
+                                            print(f"[Job {job_id}][Worker {worker_id}] ✓ REGISTERED: {phone_number}")
+                                        elif status == 'not_registered':
+                                            f.write(f"{phone_number} - Not Registered (Worker {worker_id})\n")
+                                            print(f"[Job {job_id}][Worker {worker_id}] ✗ NOT REGISTERED: {phone_number}")
+                                        else:
+                                            f.write(f"{phone_number} - Unknown Status (Worker {worker_id})\n")
+                                            print(f"[Job {job_id}][Worker {worker_id}] ? UNKNOWN STATUS: {phone_number}")
+                                    else:
+                                        f.write(f"{phone_number} - Failed to Process (Worker {worker_id})\n")
+                                        print(f"[Job {job_id}][Worker {worker_id}] ✗ FAILED to process {phone_number}")
+                            except Exception as e:
+                                print(f"[Job {job_id}][Worker {worker_id}] Error saving result for {phone_number}: {e}")
+                        
+                except concurrent.futures.TimeoutError:
+                    print(f"⏰ Batch {batch_id + 1} timed out")
+                except Exception as exc:
+                    print(f"❌ Batch {batch_id + 1} generated an exception: {exc}")
+            
+            # Check if job was terminated
+            was_terminated = job_id in job_termination_flags and job_termination_flags[job_id].is_set()
+            if was_terminated:
+                print(f"🛑 Job {job_id} was terminated by user. Processed {completed_batches}/{total_batches} batches")
+                active_jobs[job_id]['status'] = 'stopped'
+                active_jobs[job_id]['error'] = f'Stopped by user - processed {completed_batches}/{total_batches} batches'
+            else:
+                print(f"✅ Job {job_id} completed normally. Processed {completed_batches}/{total_batches} batches")
+    else:
+        print("Single-process mode not implemented in this version. Please enable multiprocessing in config.json")
+        raise Exception("Single-process mode not supported")
+    
+    # Update job status based on completion or termination
+    was_terminated = job_id in job_termination_flags and job_termination_flags[job_id].is_set()
+    
+    if not was_terminated and job_id in active_jobs and active_jobs[job_id]['status'] != 'stopped':
+        active_jobs[job_id]['status'] = 'completed'
+    
+    active_jobs[job_id]['end_time'] = datetime.now()
+    active_jobs[job_id]['output_file'] = job_output_file
+    
+    # Terminate any remaining processes
+    terminate_job_processes(job_id)
+    
+    # Check if output file was created and send appropriate message
+    if os.path.exists(job_output_file):
+        if was_terminated or active_jobs[job_id]['status'] == 'stopped':
+            # Send partial results message
+            send_partial_results_message_sync(chat_id, job_id, job_output_file, bot_application)
+        else:
+            # Send completion message with file
+            send_completion_message_sync(chat_id, job_id, job_output_file, bot_application)
+    else:
+        # Send error message
+        send_simple_message(chat_id, f"❌ Job {job_id} completed but no output file was generated.\n"
+                                   f"This might indicate an error during processing.", bot_application)
+    
+    # Cleanup temporary files
+    cleanup_job_files(job_id)
 
 def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_application):
-    """Run the Doctolib bot processing in a separate thread"""
+    """Run the Doctolib bot processing using either Celery or threading"""
     try:
         print(f"Starting job {job_id} for user {user_id}")
         
-        # Validate main.py dependencies first
-        if not validate_main_dependencies():
-            raise Exception("Required dependencies from main.py are not available")
+        # Load base config
+        config = load_config()
+        config = ensure_proxy_config_compatibility(config)
         
-        # Create termination flag for this job
-        job_termination_flags[job_id] = threading.Event()
-        job_processes[job_id] = []
+        # Determine processing mode
+        if CELERY_AVAILABLE:
+            processing_mode = get_processing_mode(config)
+        else:
+            processing_mode = 'threading'
+        
+        print(f"🔄 Using processing mode: {processing_mode}")
+        
+        # Create termination flag for this job (only needed for threading mode)
+        if processing_mode == 'threading':
+            job_termination_flags[job_id] = threading.Event()
+            job_processes[job_id] = []
         
         # Update job status
         active_jobs[job_id]['status'] = 'processing'
         active_jobs[job_id]['start_time'] = datetime.now()
-        
-        # Send processing started message using a simple approach
-        def send_start_message():
-            try:
-                import requests
-                # Use direct HTTP request to avoid event loop issues
-                bot_token = bot_application.bot.token
-                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                data = {
-                    'chat_id': chat_id,
-                    'text': f"🔄 Processing started for job {job_id}\n"
-                           f"📱 Processing {len(active_jobs[job_id]['phone_numbers'])} phone numbers...\n"
-                           f"⏰ This may take several minutes depending on the number of phones."
-                }
-                response = requests.post(url, data=data, timeout=10)
-                if response.status_code == 200:
-                    print(f"Start message sent successfully for job {job_id}")
-                else:
-                    print(f"Failed to send start message: {response.status_code}")
-            except Exception as e:
-                print(f"Error sending start message: {e}")
-        
-        send_start_message()
-        
-        # Load base config without modifying the global config file
-        config = load_config()
-        
-        # Ensure proxy configuration compatibility
-        config = ensure_proxy_config_compatibility(config)
-        
-        # Print multiprocessing configuration that will be used
-        phone_count = len(active_jobs[job_id]['phone_numbers'])
-        if config['multiprocessing']['enabled']:
-            max_workers = config['multiprocessing']['max_workers']
-            phones_per_worker = config['multiprocessing']['phones_per_worker']
-            estimated_batches = (phone_count + phones_per_worker - 1) // phones_per_worker
-            actual_workers = min(max_workers, estimated_batches)
-            
-            print(f"Job {job_id} multiprocessing configuration:")
-            print(f"  📱 Total phones: {phone_count}")
-            print(f"  🔧 Max workers: {max_workers}")
-            print(f"  📦 Phones per worker: {phones_per_worker}")
-            print(f"  🎯 Estimated batches: {estimated_batches}")
-            print(f"  ⚡ Actual workers to use: {actual_workers}")
-        else:
-            print(f"Job {job_id} will run in single-process mode (multiprocessing disabled)")
-        
-        # Ensure results directory exists
-        results_dir = os.path.join(BASE_PATH, 'results')
-        os.makedirs(results_dir, exist_ok=True)
-        
-        # Create job-specific filenames
-        job_phone_file = os.path.join(BASE_PATH, "results", f"phone_numbers_{job_id}.txt")
-        job_output_file = os.path.join(BASE_PATH, "results", f"downloadable_{job_id}.txt")
-        
-        # Copy user's phone numbers to job-specific file
-        shutil.copy2(phone_numbers_file, job_phone_file)
+        active_jobs[job_id]['processing_mode'] = processing_mode
         
         # Get phone numbers for this job
         phone_numbers = active_jobs[job_id]['phone_numbers']
         
-        # Create job-specific config without modifying global config
-        job_config = config.copy()
-        job_config['files']['phone_numbers_file'] = f"results/phone_numbers_{job_id}.txt"
-        job_config['files']['output_file'] = f"results/downloadable_{job_id}.txt"
+        # Send processing started message
+        send_start_message(chat_id, job_id, phone_numbers, processing_mode, bot_application)
         
-        # Apply intelligent scaling for this job
-        total_phones = len(phone_numbers)
-        print(f"🧠 Applying intelligent scaling for {total_phones:,} phone numbers...")
-        
-        if job_config['multiprocessing'].get('auto_scale', True):
-            optimal_workers, optimal_phones_per_worker = calculate_optimal_workers_and_batch_size(total_phones)
+        # Process based on selected mode
+        if processing_mode == 'celery':
+            # Use Celery distributed processing
+            result = process_phones_with_celery(phone_numbers, job_id, config, chat_id, bot_application)
             
-            # Apply safety limits
-            max_worker_limit = job_config['multiprocessing'].get('max_worker_limit', 130)
-            optimal_workers = min(optimal_workers, max_worker_limit)
-            
-            # Override config with optimal values
-            job_config['multiprocessing']['max_workers'] = optimal_workers
-            job_config['multiprocessing']['phones_per_worker'] = optimal_phones_per_worker
-            
-            print(f"✅ Auto-scaling applied:")
-            print(f"   🤖 Workers: {optimal_workers} (limit: {max_worker_limit})")
-            print(f"   📱 Phones per worker: {optimal_phones_per_worker}")
-            
-            # Update active job info
-            active_jobs[job_id]['auto_scaled'] = True
-            active_jobs[job_id]['optimal_workers'] = optimal_workers
-            active_jobs[job_id]['optimal_phones_per_worker'] = optimal_phones_per_worker
-        
-        # Calculate dynamic delays based on dataset size
-        delays = calculate_dynamic_delays(total_phones)
-        active_jobs[job_id]['delays'] = delays
-        
-        # Debug: Print the full paths being used
-        print(f"🔍 Debug - Job {job_id} file paths:")
-        print(f"   Phone file: {job_phone_file}")
-        print(f"   Output file: {job_output_file}")
-        print(f"   Config output: {job_config['files']['output_file']}")
-        print(f"   Full output path: {os.path.join(BASE_PATH, job_config['files']['output_file'])}")
-        
-        # Process using the same logic as main.py but with isolated config and termination support
-        if job_config['multiprocessing']['enabled']:
-            import concurrent.futures
-            
-            # Split phone numbers into batches
-            phones_per_worker = job_config['multiprocessing']['phones_per_worker']
-            phone_batches = [phone_numbers[i:i+phones_per_worker] for i in range(0, len(phone_numbers), phones_per_worker)]
-            
-            print(f"📦 Split {len(phone_numbers)} phone numbers into {len(phone_batches)} batches")
-            
-            # Clear the output file at the start
-            with shared_file_lock:
-                try:
-                    with open(job_output_file, 'w', encoding='utf-8') as f:
-                        f.write("")  # Clear the file
-                    print(f"Cleared {job_output_file} for fresh start")
-                except Exception as e:
-                    print(f"Could not clear {job_output_file}: {e}")
-            
-            # Process batches using ThreadPoolExecutor with termination support
-            with concurrent.futures.ThreadPoolExecutor(max_workers=job_config['multiprocessing']['max_workers']) as executor:
-                # Submit all batches with termination support
-                future_to_batch = {
-                    executor.submit(process_phone_batch_with_termination, batch, i, job_config, job_id, delays): i 
-                    for i, batch in enumerate(phone_batches)
-                }
+            if result['success']:
+                active_jobs[job_id]['status'] = 'completed'
+                active_jobs[job_id]['end_time'] = datetime.now()
+                active_jobs[job_id]['output_file'] = result['output_file']
                 
-                # Process completed futures and save results
-                completed_batches = 0
-                total_batches = len(phone_batches)
-                
-                for future in concurrent.futures.as_completed(future_to_batch):
-                    batch_id = future_to_batch[future]
-                    
-                    # Check if termination was requested
-                    if job_id in job_termination_flags and job_termination_flags[job_id].is_set():
-                        print(f"🛑 Job {job_id} termination detected, canceling remaining batches")
-                        # Cancel remaining futures
-                        for f in future_to_batch:
-                            if not f.done():
-                                f.cancel()
-                        break
-                    
-                    try:
-                        worker_results = future.result(timeout=5)  # 5 second timeout for getting results
-                        completed_batches += 1
-                        print(f"✅ Batch {batch_id + 1}/{total_batches} completed with {len(worker_results)} results")
-                        
-                        # Save results to job-specific file using direct file writing
-                        for result in worker_results:
-                            # Use direct file writing instead of save_result_to_file to ensure it goes to the right place
-                            phone_number = result['phone_number']
-                            success = result['success']
-                            status = result['status']
-                            worker_id = result['worker_id']
-                            
-                            with shared_file_lock:  # Use the shared file lock
-                                try:
-                                    with open(job_output_file, 'a', encoding='utf-8') as f:
-                                        if success:
-                                            if status == 'registered':
-                                                f.write(f"{phone_number} - Registered (Worker {worker_id})\n")
-                                                print(f"[Job {job_id}][Worker {worker_id}] ✓ REGISTERED: {phone_number}")
-                                            elif status == 'not_registered':
-                                                f.write(f"{phone_number} - Not Registered (Worker {worker_id})\n")
-                                                print(f"[Job {job_id}][Worker {worker_id}] ✗ NOT REGISTERED: {phone_number}")
-                                            else:
-                                                f.write(f"{phone_number} - Unknown Status (Worker {worker_id})\n")
-                                                print(f"[Job {job_id}][Worker {worker_id}] ? UNKNOWN STATUS: {phone_number}")
-                                        else:
-                                            f.write(f"{phone_number} - Failed to Process (Worker {worker_id})\n")
-                                            print(f"[Job {job_id}][Worker {worker_id}] ✗ FAILED to process {phone_number}")
-                                except Exception as e:
-                                    print(f"[Job {job_id}][Worker {worker_id}] Error saving result for {phone_number}: {e}")
-                            
-                    except concurrent.futures.TimeoutError:
-                        print(f"⏰ Batch {batch_id + 1} timed out")
-                    except Exception as exc:
-                        print(f"❌ Batch {batch_id + 1} generated an exception: {exc}")
-                
-                # Check if job was terminated
-                was_terminated = job_id in job_termination_flags and job_termination_flags[job_id].is_set()
-                if was_terminated:
-                    print(f"🛑 Job {job_id} was terminated by user. Processed {completed_batches}/{total_batches} batches")
-                    active_jobs[job_id]['status'] = 'stopped'
-                    active_jobs[job_id]['error'] = f'Stopped by user - processed {completed_batches}/{total_batches} batches'
-                else:
-                    print(f"✅ Job {job_id} completed normally. Processed {completed_batches}/{total_batches} batches")
-        else:
-            print("Single-process mode not implemented in this version. Please enable multiprocessing in config.json")
-            raise Exception("Single-process mode not supported")
-        
-        # Update job status based on completion or termination
-        was_terminated = job_id in job_termination_flags and job_termination_flags[job_id].is_set()
-        
-        if not was_terminated and job_id in active_jobs and active_jobs[job_id]['status'] != 'stopped':
-            active_jobs[job_id]['status'] = 'completed'
-        
-        active_jobs[job_id]['end_time'] = datetime.now()
-        active_jobs[job_id]['output_file'] = job_output_file
-        
-        # Terminate any remaining processes
-        terminate_job_processes(job_id)
-        
-        # Check if output file was created and send appropriate message
-        if os.path.exists(job_output_file):
-            if was_terminated or active_jobs[job_id]['status'] == 'stopped':
-                # Send partial results message
-                send_partial_results_message_sync(chat_id, job_id, job_output_file, bot_application)
+                # Send completion message
+                send_completion_message_sync(chat_id, job_id, result['output_file'], bot_application)
             else:
-                # Send completion message with file
-                send_completion_message_sync(chat_id, job_id, job_output_file, bot_application)
-        else:
-            # Send error message
-            send_simple_message(chat_id, f"❌ Job {job_id} completed but no output file was generated.\n"
-                                       f"This might indicate an error during processing.", bot_application)
+                raise Exception(result.get('error', 'Celery processing failed'))
         
-        # Cleanup temporary files
-        cleanup_job_files(job_id)
+        else:
+            # Use threading-based processing (original method)
+            process_with_threading(job_id, user_id, phone_numbers_file, chat_id, bot_application, config)
         
     except Exception as e:
         print(f"Error in job {job_id}: {e}")
         
         # Terminate processes in case of error
-        terminate_job_processes(job_id)
+        if 'processing_mode' in active_jobs[job_id] and active_jobs[job_id]['processing_mode'] == 'threading':
+            terminate_job_processes(job_id)
         
         # Check if it was a user termination or actual error
         was_terminated = job_id in job_termination_flags and job_termination_flags[job_id].is_set()
@@ -855,7 +896,7 @@ def process_doctolib_job(job_id, user_id, phone_numbers_file, chat_id, bot_appli
         cleanup_job_files(job_id)
     
     finally:
-        # Always clean up termination flags and process references
+        # Always clean up termination flags and process references (only for threading mode)
         if job_id in job_termination_flags:
             del job_termination_flags[job_id]
         if job_id in job_processes:

@@ -1,0 +1,73 @@
+{
+  "execution_mode": "celery",
+  "_comment_execution_mode": "Options: 'browser' (original DrissionPage), 'celery' (HTTP requests with Celery)",
+  
+  "browser": {
+    "headless": true,
+    "timeout": 30,
+    "delay_between_phones": 1,
+    "human_behavior": true
+  },
+  
+  "celery": {
+    "workers": 4,
+    "batch_size": 50,
+    "rate_limit": "10/m",
+    "broker_url": "redis://localhost:6379/0",
+    "result_backend": "redis://localhost:6379/0",
+    "max_retries": 3
+  },
+  
+  "api": {
+    "base_url": "https://www.doctolib.de",
+    "registration_endpoint": "/authn/patient/realms/doctolib-patient/protocol/openid-connect/registrations",
+    "timeout": 30,
+    "user_agents": [
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    ]
+  },
+  
+  "multiprocessing": {
+    "enabled": true,
+    "auto_scale": true,
+    "max_workers": 4,
+    "phones_per_worker": 25,
+    "max_worker_limit": 50
+  },
+  
+  "proxy": {
+    "use_rotating_proxies": true,
+    "proxy_file": "proxies.txt",
+    "rotation": {
+      "min_requests": 3,
+      "max_requests": 8
+    },
+    "username": "r_c7c72217b5-country-de-sid-bhf5f598",
+    "password": "9871a9d8a9",
+    "host": "v2.proxyempire.io",
+    "port": "5000"
+  },
+  
+  "delays": {
+    "base_delay": 2.0,
+    "randomization": 1.0,
+    "retry_delay": 5.0,
+    "captcha_wait": 60,
+    "page_load_wait": 3
+  },
+  
+  "files": {
+    "phone_numbers_file": "results/phone_numbers.txt",
+    "output_file": "results/downloadable.txt",
+    "create_backup": false,
+    "save_results": true
+  },
+  
+  "debug": {
+    "enable_screenshots": false,
+    "verbose_logging": true,
+    "save_api_responses": false
+  }
+}

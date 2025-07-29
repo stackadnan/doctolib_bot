@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: doctolib_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  celery_worker:
+    build: .
+    container_name: doctolib_worker
+    depends_on:
+      - redis
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - ./proxies.txt:/app/proxies.txt
+    command: >
+      celery -A celery_tasks worker 
+      --loglevel=info 
+      --concurrency=4 
+      --queues=phone_checker,batch_processor
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "celery", "-A", "celery_tasks", "inspect", "ping"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+
+  celery_flower:
+    build: .
+    container_name: doctolib_monitor
+    depends_on:
+      - redis
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    volumes:
+      - ./logs:/app/logs
+    command: >
+      celery -A celery_tasks flower 
+      --port=5555 
+      --basic_auth=admin:admin123
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5555/api/workers"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+
+  # Optional: Separate service for running the main checker script
+  checker:
+    build: .
+    container_name: doctolib_checker
+    depends_on:
+      - celery_worker
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - ./proxies.txt:/app/proxies.txt
+    command: python3 celery_main.py
+    restart: "no"  # Run once
+    profiles:
+      - run  # Only start when explicitly requested
+
+volumes:
+  redis_data:
+
+networks:
+  default:
+    name: doctolib_network

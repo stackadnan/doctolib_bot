@@ -1,0 +1,62 @@
+{
+  "api": {
+    "base_url": "https://www.doctolib.de",
+    "registration_endpoint": "/authn/patient/realms/doctolib-patient/protocol/openid-connect/registrations",
+    "timeout": 30,
+    "max_retries": 3
+  },
+  "processing_mode": "auto",
+  "celery": {
+    "broker_url": "redis://localhost:6379/0",
+    "result_backend": "redis://localhost:6379/0",
+    "batch_size": 50,
+    "worker_concurrency": 4,
+    "task_timeout": 300
+  },
+  "multiprocessing": {
+    "enabled": true,
+    "max_workers": 20,
+    "phones_per_worker": 50,
+    "auto_scale": true,
+    "max_worker_limit": 130
+  },
+  "proxy": {
+    "use_rotating_proxies": true,
+    "proxy_file": "proxies.txt",
+    "rotation": {
+      "min_requests": 20,
+      "max_requests": 30,
+      "per_worker": true
+    },
+    "username": "",
+    "password": "",
+    "host": "",
+    "port": ""
+  },
+  "files": {
+    "phone_numbers_file": "phone_numbers.txt",
+    "output_file": "results.txt"
+  },
+  "delays": {
+    "base_delay": 3.0,
+    "random_factor": 0.5,
+    "between_actions": {
+      "min": 1.0,
+      "max": 2.5
+    },
+    "page_load_timeout": 15,
+    "element_wait_timeout": 10
+  },
+  "retry": {
+    "max_attempts": 3,
+    "delay_multiplier": 2.0,
+    "backoff_factor": 1.5
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(levelname)s - %(message)s"
+  },
+  "telegram": {
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+  }
+}
