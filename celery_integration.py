@@ -22,20 +22,18 @@ def process_phones_with_celery(phone_numbers, job_id, config, chat_id, bot_appli
         
         # Load Celery configuration  
         celery_config = config.get('celery', {})
-        batch_size = celery_config.get('batch_size', 10)  # Reduced from 50 to 10 for faster individual processing
         
-        # For small jobs (< 100 phones), process individually for maximum speed
-        if len(phone_numbers) < 100:
-            batch_size = 1
-            print(f"🚀 Small job detected - processing individually for maximum speed")
+        # ALWAYS process individually for maximum speed - one worker per phone
+        batch_size = 1
+        print(f"🚀 Maximum speed mode: 1 worker per phone number")
         
-        # Split phone numbers into batches for better performance
+        # Each phone gets its own task for parallel processing
         phone_batches = [
-            phone_numbers[i:i + batch_size] 
-            for i in range(0, len(phone_numbers), batch_size)
+            [phone] for phone in phone_numbers  # Each "batch" contains exactly 1 phone
         ]
         
-        print(f"📦 Split into {len(phone_batches)} batches of ~{batch_size} phones each")
+        print(f"⚡ Creating {len(phone_batches)} individual tasks for {len(phone_numbers)} phones")
+        print(f"🎯 Target: {len(phone_numbers)} workers processing simultaneously")
         
         # Prepare results file
         results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results')
@@ -53,23 +51,24 @@ def process_phones_with_celery(phone_numbers, job_id, config, chat_id, bot_appli
         print(f"📝 Results will be written to: {job_output_file}")
         print(f"🔍 Config output file: {config['files']['output_file']}")
         
-        # Create Celery group for parallel execution
+        # Create individual Celery tasks - one per phone number
         batch_tasks = []
-        for batch_idx, phone_batch in enumerate(phone_batches):
-            # Create individual tasks for each phone in the batch
-            for phone_idx, phone in enumerate(phone_batch):
-                task = check_phone_registration.s(
-                    phone_number=phone,
-                    proxy_info=None,  # Add proxy support later
-                    config=config     # Pass the full config with output file
-                )
-                batch_tasks.append(task)
+        for phone_idx, phone_batch in enumerate(phone_batches):
+            # Each batch contains exactly 1 phone
+            phone = phone_batch[0]
+            task = check_phone_registration.s(
+                phone_number=phone,
+                proxy_info=None,  # Add proxy support later
+                config=config     # Pass the full config with output file
+            )
+            batch_tasks.append(task)
         
-        # Execute tasks in parallel using Celery group
-        print(f"⚡ Submitting {len(batch_tasks)} tasks to Celery workers...")
-        print(f"🔍 Debug: First task signature: {batch_tasks[0] if batch_tasks else 'No tasks'}")
+        # Execute ALL tasks in parallel using Celery group
+        print(f"⚡ Submitting {len(batch_tasks)} individual tasks to 100 Celery workers...")
+        print(f"🎯 Each phone gets its own worker for maximum parallel processing")
+        print(f"🔍 Debug: Total tasks created: {len(batch_tasks)}")
         print(f"🔍 Debug: Celery app: {celery_app}")
-        print(f"🔍 Debug: Redis URL: redis://localhost:6379/0")
+        print(f"🔍 Debug: Target completion time: 2-3 minutes")
         
         task_group = group(batch_tasks)
         group_result = task_group.apply_async()
@@ -97,19 +96,19 @@ def process_phones_with_celery(phone_numbers, job_id, config, chat_id, bot_appli
                 rate = completed_tasks / elapsed if elapsed > 0 else 0
                 eta = (total_tasks - completed_tasks) / rate if rate > 0 else 0
                 
-                print(f"📊 Progress: {completed_tasks}/{total_tasks} ({progress:.1f}%) - {rate:.1f}/s - ETA: {eta:.0f}s")
+                print(f"⚡ ULTRA-FAST: {completed_tasks}/{total_tasks} ({progress:.1f}%) - {rate:.1f}/s - ETA: {eta:.0f}s")
                 
                 # Check if new results are being written to file
                 if os.path.exists(job_output_file):
                     with open(job_output_file, 'r', encoding='utf-8') as f:
                         lines = f.readlines()
-                    print(f"📄 File has {len(lines)} results written")
+                    print(f"📄 Results file: {len(lines)} phones completed")
                 
-                # Send progress update to user every 10%
-                if completed_tasks % max(1, total_tasks // 10) == 0:
+                # Send progress update to user every 5 completions for real-time feedback
+                if completed_tasks % 5 == 0:
                     send_progress_update(chat_id, job_id, completed_tasks, total_tasks, bot_application)
             
-            time.sleep(2)  # Check every 2 seconds for faster updates
+            time.sleep(1)  # Check every 1 second for ultra-fast updates
         
         # Collect all results (this will wait for completion)
         print("📋 All tasks completed! Collecting final results...")

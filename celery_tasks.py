@@ -35,8 +35,8 @@ def get_default_config():
         "api": {
             "base_url": "https://www.doctolib.de",
             "registration_endpoint": "/authn/patient/realms/doctolib-patient/protocol/openid-connect/registrations",
-            "timeout": 10,          # Reduced from 30 to 10 seconds
-            "max_retries": 2        # Reduced from 3 to 2 retries
+            "timeout": 5,           # Ultra-fast: reduced from 10 to 5 seconds
+            "max_retries": 1        # Ultra-fast: reduced from 2 to 1 retry only
         },
         "proxy": {
             "use_rotating_proxies": True,
@@ -47,7 +47,7 @@ def get_default_config():
             }
         },
         "delays": {
-            "base_delay": 0.5,      # Reduced from 2.0 to 0.5 seconds
+            "base_delay": 0.1,      # Ultra-fast: reduced from 0.5 to 0.1 seconds
             "randomization": 0.3,   # Reduced from 1.0 to 0.3 seconds  
             "retry_delay": 2.0      # Reduced from 5.0 to 2.0 seconds
         },
@@ -96,10 +96,10 @@ def setup_proxy(session, proxy_info):
     return False
 
 def get_random_delay(base_delay, randomization):
-    """Get a randomized delay"""
-    return max(0.1, random.uniform(base_delay - randomization, base_delay + randomization))
+    """Get a randomized delay - ultra-fast version"""
+    return max(0.05, random.uniform(base_delay - randomization, base_delay + randomization))
 
-@app.task(bind=True, max_retries=2)  # Reduced from 3 to 2 retries
+@app.task(bind=True, max_retries=1)  # Ultra-fast: reduced from 2 to 1 retry
 def check_phone_registration(self, phone_number, proxy_info=None, config=None):
     """
     Celery task to check if a phone number is registered with Doctolib

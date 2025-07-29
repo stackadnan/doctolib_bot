@@ -7,8 +7,8 @@ echo "🚀 Setting up Celery-based Doctolib Phone Checker with Telegram Bot"
 echo "====================================================================="
 
 # Script configuration
-CELERY_WORKERS=8          # Increased from 4 to 8 workers
-CELERY_CONCURRENCY=8      # Increased from 4 to 8 concurrent tasks per worker
+CELERY_WORKERS=100        # Increased to 100 workers for maximum speed
+CELERY_CONCURRENCY=1      # 1 concurrent task per worker = 100 total capacity  
 CELERY_LOG_LEVEL=info
 BOT_LOG_FILE="logs/telegram_bot.log"
 CELERY_LOG_FILE="logs/celery.log"
@@ -38,7 +38,7 @@ show_usage() {
     echo "Usage: $0 [COMMAND] [OPTIONS]"
     echo ""
     echo "Commands:"
-    echo "  workers [N] [C] - Start N workers with C concurrency each (default: 4 workers, 4 concurrency)"
+    echo "  workers [N] [C] - Start N workers with C concurrency each (default: 100 workers, 1 concurrency)"
     echo "  bot            - Start Telegram bot only"
     echo "  all [N] [C]    - Start both Celery workers and Telegram bot"
     echo "  status         - Check status of running processes"
@@ -137,7 +137,7 @@ setup_environment() {
 
 # Function to start Celery worker
 start_celery_workers() {
-    local num_workers=${1:-8}  # Fixed default to match CELERY_WORKERS
+    local num_workers=${1:-100}  # Default to 100 workers for maximum speed
     local concurrency=${2:-$CELERY_CONCURRENCY}
     local total_capacity=$((num_workers * concurrency))
     
