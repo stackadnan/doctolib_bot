@@ -115,22 +115,22 @@ def calculate_optimal_workers_and_batch_size(total_phone_numbers):
     # Define scaling rules based on total phone numbers
     if total_phone_numbers <= 100:
         # Small datasets: 1 worker only
-        workers = 1
+        workers = 100
         phones_per_worker = total_phone_numbers
     elif total_phone_numbers <= 1000:
         # Medium datasets: 10-50 workers, 20-50 phones per worker
-        workers = min(50, max(10, total_phone_numbers // 20))
+        workers = min(150, max(50, total_phone_numbers // 20))
         phones_per_worker = max(20, total_phone_numbers // workers)
     elif total_phone_numbers <= 10000:
         # Large datasets: 50-100 workers, 50-100 phones per worker
-        workers = min(100, max(50, total_phone_numbers // 100))
+        workers = min(200, max(150, total_phone_numbers // 100))
         phones_per_worker = max(50, total_phone_numbers // workers)
     elif total_phone_numbers <= 100000:
         # Very large datasets: 100-130 workers, 500-1000 phones per worker
-        workers = min(130, max(100, total_phone_numbers // 750))
+        workers = min(250, max(100, total_phone_numbers // 750))
         phones_per_worker = max(500, total_phone_numbers // workers)
     else:
-        workers = 130
+        workers = 250
         phones_per_worker = max(750, total_phone_numbers // workers)
     
     # Ensure we don't exceed realistic limits
@@ -400,7 +400,7 @@ def create_proxy_auth_extension(proxy_info, worker_id=0):
             mode: "fixed_servers",
             rules: {
               singleProxy: {
-                scheme: "http",
+                scheme: "https",
                 host: "%s",
                 port: parseInt(%s)
               },

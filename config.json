@@ -2,9 +2,9 @@
     "multiprocessing": {
         "enabled": true,
         "auto_scale": true,
-        "max_workers": 20,
-        "phones_per_worker": 10,
-        "max_worker_limit": 130
+        "max_workers": 200,
+        "phones_per_worker": 200,
+        "max_worker_limit": 200
     },
     "browser": {
         "headless": false,
@@ -41,7 +41,7 @@
         "hybrid_approach": true
     },
     "telegram": {
-        "bot_token": "8028132470:AAFMfGnKtoI5tKIduZb3DFtArTYSQjpAzcE",
+        "bot_token": "8425423547:AAHp03nVXGABseZIvVHSKhxF6LiXtmPL7zc",
         "max_file_size_mb": 10,
         "max_phone_numbers": 10000000
     }

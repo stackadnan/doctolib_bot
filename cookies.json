@@ -1,0 +1,32 @@
+[
+    {
+        "name": "_dd_s",
+        "value": "aid=2fd8292b-79ed-4cac-a06d-1ee8aa88383f&rum=0&expire=1753879313554",
+        "domain": "www.doctolib.de"
+    },
+    {
+        "name": "AUTH_SESSION_ID_LEGACY",
+        "value": "afd90a33-3d34-4347-a0c6-c6f09ce106e2.keycloak-patients-1-34337",
+        "domain": "www.doctolib.de"
+    },
+    {
+        "name": "__cf_bm",
+        "value": "obRYBFzSZAQGFkN9Z8bwaz7PbuUgbZEOp0ssqGo95.A-1753878404-1.0.1.1-NogHo80NQfF3Vlr2y0JdJAZGe3_VnXt0FQ9_M4mVD8rTg5Seo_lOHvnnbLlxQxwo7KxdVfULFNwhP8zqRRvVrzYC8IwBSBRDt7dFRYqZ9UKOEMYy1EdPv7.dlkCaOhTR",
+        "domain": ".doctolib.de"
+    },
+    {
+        "name": "dl_frcid",
+        "value": "27dfd529-ade1-4bc3-b0db-bdba86a2545a",
+        "domain": "www.doctolib.de"
+    },
+    {
+        "name": "_cfuvid",
+        "value": "rEsYPsE6PrSc227js2cia5ER2eKvi6Hv4YT0kMR.Gn8-1753878404478-0.0.1.1-604800000",
+        "domain": ".doctolib.de"
+    },
+    {
+        "name": "AUTH_SESSION_ID",
+        "value": "afd90a33-3d34-4347-a0c6-c6f09ce106e2.keycloak-patients-1-34337",
+        "domain": "www.doctolib.de"
+    }
+]
