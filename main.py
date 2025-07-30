@@ -115,7 +115,7 @@ def calculate_optimal_workers_and_batch_size(total_phone_numbers):
     # Define scaling rules based on total phone numbers
     if total_phone_numbers <= 100:
         # Small datasets: 1 worker only
-        workers = 30
+        workers = 1
         phones_per_worker = total_phone_numbers
     elif total_phone_numbers <= 1000:
         # Medium datasets: 10-50 workers, 20-50 phones per worker
@@ -464,17 +464,15 @@ def dismiss_popup_or_modal(dp, worker_id, delays=None):
     
     if delays is None:
         delays = {'popup_dismiss_delay': 1.0, 'randomization': 0.3}
+
+    
     
     # Method 1: Try clicking common close button selectors
     close_selectors = [
+        'xpath://button[contains(text(), "Andere Telefonnummer nutzen") or contains(text(), "Use another phone number")]',
+        'xpath:(//*[@class="dl-button-label"])[6]',
         'css:button[aria-label="Close"]',
         'css:.close',
-        'css:.modal-close',
-        'css:.popup-close',
-        'xpath://button[contains(text(), "Close") or contains(text(), "Schließen")]',
-        'css:button[title="Close"]',
-        'css:.fa-times',
-        'css:.fa-close'
     ]
     
     for selector in close_selectors:
@@ -493,8 +491,8 @@ def dismiss_popup_or_modal(dp, worker_id, delays=None):
     try:
         print(f"[Worker {worker_id}] Trying Escape key...")
         dp.key.press('Escape')
-        dismiss_delay = get_random_delay(delays['popup_dismiss_delay'], delays['randomization'])
-        time.sleep(dismiss_delay)
+        # dismiss_delay = get_random_delay(delays['popup_dismiss_delay'], delays['randomization'])
+        time.sleep(random.uniform(0.4, 1.5))  # 0.5-1.5 seconds delay
         return True
     except:
         pass
@@ -516,13 +514,13 @@ def dismiss_popup_or_modal(dp, worker_id, delays=None):
 
 def load_initial_page(dp, url, delays=None):
     """Load the page for the first time with dynamic delays"""
-    print(f"Loading initial page: {url}")
+    # print(f"Loading initial page: {url}")
     dp.get(url)
 
     # Wait for page to load completely with dynamic delay
     if delays:
         load_delay = get_random_delay(delays['page_load_wait'], delays['randomization'])
-        print(f"Waiting {load_delay:.1f}s for initial page to load...")
+        # print(f"Waiting {load_delay:.1f}s for initial page to load...")
         time.sleep(load_delay)
     else:
         print("Waiting for initial page to load...")
@@ -530,7 +528,7 @@ def load_initial_page(dp, url, delays=None):
 
     # Check if page loaded successfully
     if "doctolib" in dp.url.lower():
-        print("Successfully loaded Doctolib page")
+        # print("Successfully loaded Doctolib page")
         return True
     else:
         print(f"Warning: May not have loaded correctly. Current URL: {dp.url}")
@@ -553,7 +551,7 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, delay
             # For subsequent numbers, check current page state and navigate appropriately
             print(f"[Worker {worker_id}] Preparing for next phone number...")
             current_url = dp.url
-            print(f"[Worker {worker_id}] Current URL: {current_url}")
+            # print(f"[Worker {worker_id}] Current URL: {current_url}")
             
             # If we're still on a registration-related page, try going back first
             if 'step-username_sign_up' in current_url:
@@ -616,7 +614,7 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, delay
                     print(f"[Worker {worker_id}] Trying selector {i+1}: {selector}")
                 phone_element = dp.ele(selector, timeout=2)
                 if phone_element:
-                    print(f"[Worker {worker_id}] Success! Found input field with selector: {selector}")
+                    # print(f"[Worker {worker_id}] Success! Found input field with selector: {selector}")
                     break
             except Exception as e:
                 if config['debug']['verbose_logging']:
@@ -662,8 +660,8 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, delay
             print(f"[Worker {worker_id}] Phone number entered: {phone_number}")
         
         # Human-like pause after entering phone number
-        post_input_delay = get_random_delay(1.0, 0.3)
-        time.sleep(post_input_delay)
+        # post_input_delay = get_random_delay(1.0, 0.3)
+        time.sleep(random.uniform(0.5, 1.5))  # 1-1.5 seconds pause after input
 
         # Find and click the "Further" or "Weiter" button
         button = None
@@ -681,7 +679,7 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, delay
                     print(f"[Worker {worker_id}] Trying button selector {i+1}: {selector}")
                 button = dp.ele(selector, timeout=2)
                 if button:
-                    print(f"[Worker {worker_id}] Success! Found button with selector: {selector}")
+                    # print(f"[Worker {worker_id}] Success! Found button with selector: {selector}")
                     break
             except Exception as e:
                 if config['debug']['verbose_logging']:
@@ -719,9 +717,9 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, delay
             print(f"[Worker {worker_id}] No CAPTCHA detected")
 
         # Wait a bit more for any dynamic updates with human-like delay
-        dynamic_wait = get_random_delay(delays['page_load_wait'], delays['randomization'])
-        print(f"[Worker {worker_id}] Waiting {dynamic_wait:.1f}s for page updates...")
-        time.sleep(dynamic_wait)
+        # dynamic_wait = get_random_delay(delays['page_load_wait'], delays['randomization'])
+        # print(f"[Worker {worker_id}] Waiting {dynamic_wait:.1f}s for page updates...")
+        time.sleep(random.uniform(0.5, 1.5))  # 1-2 seconds wait for dynamic updates
 
         # Check if button is enabled before clicking
         try:
@@ -738,9 +736,9 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, delay
             pass
 
         # Human-like delay before clicking button
-        button_delay = get_random_delay(delays['button_click_delay'], delays['randomization'])
-        print(f"[Worker {worker_id}] Waiting {button_delay:.1f}s before clicking button (human behavior)...")
-        time.sleep(button_delay)
+        # button_delay = get_random_delay(delays['button_click_delay'], delays['randomization'])
+        # print(f"[Worker {worker_id}] Waiting {button_delay:.1f}s before clicking button (human behavior)...")
+        time.sleep(random.uniform(0.5, 1.5))  # 0.5-1.5 seconds delay before clicking
         
         print(f"[Worker {worker_id}] Attempting to click the button...")
         button.click()
@@ -753,7 +751,7 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, delay
 
         registration_detected = False
         registration_status = None  # Will be 'registered', 'not_registered', or None
-        max_attempts = 90
+        max_attempts = 120
 
         for attempt in range(max_attempts):
             try:
@@ -1280,6 +1278,9 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
         }
         worker_results.append(result)
         
+        # Save result to file immediately (real-time saving)
+        save_result_to_file(result, config)
+        
         # Add dynamic delay between numbers based on dataset size
         if index < len(phone_batch) - 1:
             between_phones_delay = get_random_delay(delays['base_delay'], delays['randomization'])
@@ -1349,19 +1350,27 @@ def save_result_to_file(result, config):
     with file_lock:
         try:
             downloadable_file = os.path.join(BASE_PATH, config['files']['output_file'])
+            
+            # Ensure the directory exists
+            os.makedirs(os.path.dirname(downloadable_file), exist_ok=True)
+            
             with open(downloadable_file, 'a', encoding='utf-8') as f:
                 if success:
                     if status == 'registered':
                         f.write(f"{phone_number} - Registered (Worker {worker_id})\n")
+                        f.flush()  # Ensure immediate write to disk
                         print(f"[Worker {worker_id}] ✓ REGISTERED: {phone_number} (saved to {config['files']['output_file']})")
                     elif status == 'not_registered':
                         f.write(f"{phone_number} - Not Registered (Worker {worker_id})\n")
+                        f.flush()  # Ensure immediate write to disk
                         print(f"[Worker {worker_id}] ✗ NOT REGISTERED: {phone_number} (saved to {config['files']['output_file']})")
                     else:
                         f.write(f"{phone_number} - Unknown Status (Worker {worker_id})\n")
+                        f.flush()  # Ensure immediate write to disk
                         print(f"[Worker {worker_id}] ? UNKNOWN STATUS: {phone_number} (saved to {config['files']['output_file']})")
                 else:
                     f.write(f"{phone_number} - Failed to Process (Worker {worker_id})\n")
+                    f.flush()  # Ensure immediate write to disk
                     print(f"[Worker {worker_id}] ✗ FAILED to process {phone_number} (saved to {config['files']['output_file']})")
         except Exception as e:
             print(f"[Worker {worker_id}] Error saving result for {phone_number} to {config['files']['output_file']}: {e}")
@@ -1390,13 +1399,13 @@ def main():
     config = load_config()
     
     # Print configuration summary
-    print(f"\n📋 Configuration Summary:")
-    print(f"   Multiprocessing: {'Enabled' if config['multiprocessing']['enabled'] else 'Disabled'}")
-    print(f"   Max Workers: {config['multiprocessing']['max_workers']}")
-    print(f"   Phones per Worker: {config['multiprocessing']['phones_per_worker']}")
-    print(f"   Headless Mode: {config['browser']['headless']}")
-    print(f"   Debug Screenshots: {config['debug']['enable_screenshots']}")
-    print(f"   Verbose Logging: {config['debug']['verbose_logging']}")
+    # print(f"\n📋 Configuration Summary:")
+    # print(f"   Multiprocessing: {'Enabled' if config['multiprocessing']['enabled'] else 'Disabled'}")
+    # print(f"   Max Workers: {config['multiprocessing']['max_workers']}")
+    # print(f"   Phones per Worker: {config['multiprocessing']['phones_per_worker']}")
+    # print(f"   Headless Mode: {config['browser']['headless']}")
+    # print(f"   Debug Screenshots: {config['debug']['enable_screenshots']}")
+    # print(f"   Verbose Logging: {config['debug']['verbose_logging']}")
     
     # Load phone numbers
     phone_numbers = read_phone_numbers(config)
@@ -1406,8 +1415,8 @@ def main():
         return
     
     total_phones = len(phone_numbers)
-    print(f"\n📊 Dataset Analysis:")
-    print(f"   📱 Total phone numbers: {total_phones:,}")
+    # print(f"\n📊 Dataset Analysis:")
+    # print(f"   📱 Total phone numbers: {total_phones:,}")
     
     # Calculate intelligent scaling and dynamic delays
     if config['multiprocessing'].get('auto_scale', True):
@@ -1482,10 +1491,8 @@ def main():
                     worker_results = future.result()
                     print(f"✅ Batch {batch_id + 1} completed with {len(worker_results)} results")
                     
-                    # Save results and update tracking
+                    # Update tracking (results already saved to file in real-time)
                     for result in worker_results:
-                        save_result_to_file(result, config)
-                        
                         # Update tracking
                         if result['success']:
                             if result['status'] == 'registered':

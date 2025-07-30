@@ -46,35 +46,51 @@ def cleanup_old_jobs():
         jobs_to_remove = []
         
         for job_id, job in active_jobs.items():
-            # Remove jobs older than 30 minutes or completed jobs older than 5 minutes
+            # Remove completed/failed jobs older than 5 minutes
+            # NEVER remove jobs that are still processing or waiting, regardless of age
             job_age = (current_time - job.get('created_time', current_time)).total_seconds()
             
-            if job['status'] in ['completed', 'failed']:
+            if job['status'] in ['completed', 'failed', 'stopped']:
                 completion_time = job.get('end_time', job.get('created_time', current_time))
                 time_since_completion = (current_time - completion_time).total_seconds()
                 if time_since_completion > JOB_CLEANUP_INTERVAL:
                     jobs_to_remove.append(job_id)
-            elif job_age > JOB_EXPIRY_TIME:
+            # Only remove non-active jobs if they're very old (2 hours) and not processing
+            elif job['status'] not in ['processing', 'waiting'] and job_age > 7200:  # 2 hours for unknown status
                 jobs_to_remove.append(job_id)
+            # Never remove processing or waiting jobs regardless of age
         
-        # If we still have too many jobs, remove the oldest completed ones
+        # If we still have too many jobs, remove the oldest completed/failed ones first
+        # Never remove processing or waiting jobs due to limits
         if len(active_jobs) > MAX_ACTIVE_JOBS:
             completed_jobs = [(job_id, job) for job_id, job in active_jobs.items() 
-                            if job['status'] in ['completed', 'failed']]
+                            if job['status'] in ['completed', 'failed', 'stopped']]
             completed_jobs.sort(key=lambda x: x[1].get('end_time', x[1].get('created_time', datetime.now())))
             
-            excess_count = len(active_jobs) - MAX_ACTIVE_JOBS
-            for job_id, _ in completed_jobs[:excess_count]:
+            # Only remove completed jobs, never remove active ones
+            excess_count = max(0, len(active_jobs) - MAX_ACTIVE_JOBS)
+            removal_count = min(excess_count, len(completed_jobs))
+            
+            for job_id, _ in completed_jobs[:removal_count]:
                 if job_id not in jobs_to_remove:
                     jobs_to_remove.append(job_id)
         
         # Remove the jobs
         for job_id in jobs_to_remove:
+            job_status = active_jobs[job_id]['status']
             del active_jobs[job_id]
-            print(f"Cleaned up job {job_id} from memory")
+            print(f"Cleaned up job {job_id} (status: {job_status}) from memory")
         
         if jobs_to_remove:
-            print(f"Memory cleanup: Removed {len(jobs_to_remove)} old jobs. Active jobs: {len(active_jobs)}")
+            # Count remaining jobs by status
+            remaining_status_count = {}
+            for job in active_jobs.values():
+                status = job['status']
+                remaining_status_count[status] = remaining_status_count.get(status, 0) + 1
+            
+            status_summary = ", ".join([f"{status}: {count}" for status, count in remaining_status_count.items()])
+            print(f"Memory cleanup: Removed {len(jobs_to_remove)} old jobs. "
+                  f"Active jobs: {len(active_jobs)} ({status_summary})")
 
 def schedule_job_cleanup():
     """Schedule periodic job cleanup"""
@@ -388,7 +404,7 @@ def send_partial_results_message_sync(chat_id, job_id, output_file, bot_applicat
             f"• Unknown Status: {len(unknown_numbers)}\n\n"
             f"⏱ Processing Time: {duration}\n"
             f"🔄 All Chrome instances have been closed\n\n"
-            # f"📎 Download your partial results below:"
+            f"📎 Download your partial results below:"
         )
         
         # Send summary message
@@ -469,7 +485,7 @@ def send_completion_message_sync(chat_id, job_id, output_file, bot_application):
             f"• Unknown Status: {len(unknown_numbers)}\n"
             f"• Total Processed: {len(lines)}\n\n"
             f"⏱ Processing Time: {duration}\n\n"
-            # f"📎 Download your results below:"
+            f"📎 Download your results below:"
         )
         
         # Send summary message
@@ -1001,7 +1017,7 @@ async def send_completion_message(chat_id, job_id, output_file, bot_application)
             f"• Unknown Status: {unknown_count}\n"
             f"• Total Processed: {len(lines)}\n\n"
             f"⏱ *Processing Time:* {duration}\n\n"
-            # f"📎 *Download your results below:*"
+            f"📎 *Download your results below:*"
         )
         
         # Send summary message
@@ -1060,7 +1076,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "📁 *Commands:*\n"
         "• /start - Show this welcome message\n"
         "• /status - Check current job status\n"
-        # "• /download - Download current/partial results\n"
+        "• /download - Download current/partial results\n"
         "• /stop - Stop running job process\n"
         "• /help - Get detailed help\n\n"
         "📤 *Ready to start? Send me your phone_numbers.txt file!*"
@@ -1110,7 +1126,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*Commands:*\n"
         "• `/start` - Show welcome message\n"
         "• `/status` - Check job status and progress\n"
-        # "• `/download` - Get current results (even if job is still running)\n"
+        "• `/download` - Get current results (even if job is still running)\n"
         "• `/stop` - Stop your running job and get partial results\n"
         "• `/help` - Show this help message\n"
         f"{display_commands}\n"
@@ -1267,13 +1283,25 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Handle the /status command"""
     user_id = update.effective_user.id
     
+    # Debug logging
+    print(f"🔍 Status command - User ID: {user_id}")
+    print(f"🔍 Total active jobs in memory: {len(active_jobs)}")
+    
     # Find user's active jobs
     user_jobs = [job for job_id, job in active_jobs.items() if job['user_id'] == user_id]
     
+    # More debug info
+    if active_jobs:
+        print(f"🔍 All jobs in memory:")
+        for job_id, job in active_jobs.items():
+            print(f"   Job {job_id}: user_id={job['user_id']}, status={job['status']}")
+    
     if not user_jobs:
+        print(f"🔍 No jobs found for user {user_id}")
         await update.message.reply_text("📭 You have no active jobs.")
         return
     
+    print(f"🔍 Found {len(user_jobs)} jobs for user {user_id}")
     status_message = "📊 *Your Active Jobs:*\n\n"
     
     for job in user_jobs:
@@ -1403,6 +1431,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             'status': 'waiting',
             'created_time': datetime.now()
         }
+        
+        # Debug logging
+        print(f"🔍 Created job {job_id} for user_id: {user_id}, chat_id: {chat_id}")
+        print(f"🔍 Job status: {active_jobs[job_id]['status']}, phone count: {len(phone_numbers)}")
         
         # Send confirmation
         confirmation_message = (

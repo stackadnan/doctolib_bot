@@ -10,7 +10,7 @@
         "headless": false,
         "timeout": 30,
         "delay_between_phones": 1,
-        "human_behavior": true
+        "human_behavior": false
     },
     "proxy": {
         "use_rotating_proxies": true,
@@ -22,7 +22,8 @@
         "username": "r_c7c72217b5-country-de-sid-bhf5f598",
         "password": "9871a9d8a9",
         "host": "v2.proxyempire.io",
-        "port": "5000"
+        "port": "5000",
+        "browser_proxy_enabled": false
     },
     "files": {
         "phone_numbers_file": "results/phone_numbers.txt",
@@ -32,10 +33,15 @@
     },
     "debug": {
         "enable_screenshots": false,
-        "verbose_logging": true
+        "verbose_logging": false
+    },
+    "experimental": {
+        "try_api_first": true,
+        "cross_validate": true,
+        "hybrid_approach": true
     },
     "telegram": {
-        "bot_token": "8425423547:AAHp03nVXGABseZIvVHSKhxF6LiXtmPL7zc",
+        "bot_token": "8028132470:AAFMfGnKtoI5tKIduZb3DFtArTYSQjpAzcE",
         "max_file_size_mb": 10,
         "max_phone_numbers": 10000000
     }
