@@ -236,6 +236,7 @@ def get_default_config():
     }
 
 def load_proxies(config):
+    # Always return Squid proxy on localhost
     return [{
         'host': '127.0.0.1',
         'port': '3128',
@@ -244,6 +245,10 @@ def load_proxies(config):
     }]
 
 class ProxyRotator:
+    def get_current_proxy(self):
+        if not self.proxies:
+            return None
+        return self.proxies[self.current_proxy_index]
     def __init__(self, proxies, config, worker_id):
         self.proxies = proxies
         self.config = config
@@ -320,7 +325,7 @@ def create_proxy_auth_extension(proxy_info, worker_id=0):
     };
 
     chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
-    """ 
+    """
 
     # Create directory if it doesn't exist
     if not os.path.exists(directory_name):
