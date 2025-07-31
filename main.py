@@ -1298,10 +1298,8 @@ def main():
     
     else:
         print("\n🔄 Running in single-process mode...")
-        # Single process mode (original logic)
-        # This would use the original main logic but adapted for the config system
-        print("Single-process mode not implemented in this version. Please enable multiprocessing in config.json")
-        return
+        # Process all phone numbers in a single batch
+        process_phone_batch(phone_numbers, 0, config, delays)
 
     # Print final summary
     print(f"\n🎉 Completed processing all {len(phone_numbers)} phone numbers.")
