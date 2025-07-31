@@ -218,10 +218,8 @@ def get_default_config():
                 "min_requests": 3,
                 "max_requests": 8
             },
-            "username": "r_c7c72217b5-country-de-sid-bhf5f598",
-            "password": "9871a9d8a9",
-            "host": "v2.proxyempire.io",
-            "port": "5000"
+            "host": "127.0.0.1",
+            "port": "3128"
         },
         "files": {
             "phone_numbers_file": "results/phone_numbers.txt",
@@ -236,54 +234,138 @@ def get_default_config():
     }
 
 def load_proxies(config):
-    # Always return Squid proxy on localhost
-    return [{
-        'host': '127.0.0.1',
-        'port': '3128',
-        'username': '',
-        'password': ''
-    }]
+    """Load rotating proxies from file"""
+    if not config['proxy'].get('use_rotating_proxies', False):
+        # Check if we should use the static proxy from config
+        if all(config['proxy'].get(key) for key in ['host', 'port', 'username', 'password']):
+            print("Using static proxy from configuration...")
+            static_proxy = {
+                'host': config['proxy']['host'],
+                'port': config['proxy']['port'],
+                'username': config['proxy']['username'],
+                'password': config['proxy']['password']
+            }
+            
+            # Skip proxy testing for faster startup - use static proxy directly
+            print("⚡ Skipping proxy testing for faster startup - using static proxy")
+            return [static_proxy]
+        else:
+            print("No proxy configuration found, running without proxy")
+            return []
+    
+    proxy_file = os.path.join(BASE_PATH, config['proxy']['proxy_file'])
+    proxies = []
+    
+    try:
+        with open(proxy_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and ':' in line:
+                    parts = line.split(':')
+                    if len(parts) == 4:
+                        proxy = {
+                            'host': parts[0],
+                            'port': parts[1],
+                            'username': parts[2],
+                            'password': parts[3]
+                        }
+                        proxies.append(proxy)
+        
+        print(f"📁 Loaded {len(proxies)} proxies from {proxy_file}")
+        
+        # Skip proxy testing for faster startup - use all proxies directly
+        print(f"⚡ Skipping proxy testing for faster startup - using all {len(proxies)} proxies")
+        return proxies
+        
+    except FileNotFoundError:
+        print(f"❌ Proxy file not found: {proxy_file}")
+        # Fall back to static proxy if configured
+        if all(config['proxy'].get(key) for key in ['host', 'port', 'username', 'password']):
+            print("Falling back to static proxy from configuration...")
+            static_proxy = {
+                'host': config['proxy']['host'],
+                'port': config['proxy']['port'],
+                'username': config['proxy']['username'],
+                'password': config['proxy']['password']
+            }
+            
+            # Skip proxy testing for faster startup - use static proxy directly
+            print("⚡ Skipping proxy testing for faster startup - using fallback static proxy")
+            return [static_proxy]
+        return []
+    except Exception as e:
+        print(f"❌ Error loading proxies: {e}")
+        return []
 
 class ProxyRotator:
-    def get_current_proxy(self):
-        if not self.proxies:
-            return None
-        return self.proxies[self.current_proxy_index]
+    """Manages proxy rotation for workers"""
     def __init__(self, proxies, config, worker_id):
         self.proxies = proxies
         self.config = config
         self.worker_id = worker_id
         self.current_proxy_index = worker_id % len(proxies) if proxies else 0
         self.requests_with_current_proxy = 0
-        self.last_rotation = time.time()
-        self.rotation_interval = 5  # Rotate every 5 seconds
+        
+        # Safe access to rotation config
+        rotation_config = config['proxy'].get('rotation', {'min_requests': 3, 'max_requests': 8})
+        self.max_requests_for_current_proxy = random.randint(
+            rotation_config['min_requests'],
+            rotation_config['max_requests']
+        )
+        
         current_proxy = self.get_current_proxy()
         proxy_info = f"{current_proxy['host']}:{current_proxy['port']}" if current_proxy else "None"
-        print(f"[Worker {worker_id}] 🔄 Proxy rotator initialized - using proxy {self.current_proxy_index + 1}: {proxy_info}")
-
+        print(f"[Worker {worker_id}] 🔄 Proxy rotator initialized - using proxy {self.current_proxy_index + 1}: {proxy_info} for {self.max_requests_for_current_proxy} requests")
+    
+    def get_current_proxy(self):
+        """Get the current proxy for this worker"""
+        if not self.proxies:
+            return None
+        return self.proxies[self.current_proxy_index]
+    
     def should_rotate(self):
-        # Rotate if 5 seconds have passed
-        return (time.time() - self.last_rotation) >= self.rotation_interval
-
+        """Check if proxy should be rotated"""
+        return self.requests_with_current_proxy >= self.max_requests_for_current_proxy
+    
     def rotate_proxy(self):
+        """Rotate to next proxy"""
         if not self.proxies or len(self.proxies) <= 1:
             return
+        
         old_index = self.current_proxy_index
         old_proxy = self.proxies[old_index]
-        self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
+        
+        # Move to next proxy, with some randomization
+        self.current_proxy_index = (self.current_proxy_index + random.randint(1, 3)) % len(self.proxies)
         self.requests_with_current_proxy = 0
-        self.last_rotation = time.time()  # Update rotation time
+        
+        # Safe access to rotation config
+        rotation_config = self.config['proxy'].get('rotation', {'min_requests': 3, 'max_requests': 8})
+        self.max_requests_for_current_proxy = random.randint(
+            rotation_config['min_requests'],
+            rotation_config['max_requests']
+        )
+        
         new_proxy = self.proxies[self.current_proxy_index]
-        # print(f"[Worker {worker_id}] 🔄 Rotated proxy:")
+        
+        print(f"[Worker {self.worker_id}] 🔄 Rotated proxy:")
         print(f"   From: {old_proxy['host']}:{old_proxy['port']}")
         print(f"   To: {new_proxy['host']}:{new_proxy['port']}")
+        print(f"   Will use for {self.max_requests_for_current_proxy} requests")
+    
+    def increment_request_count(self):
+        """Increment request count and rotate if needed"""
+        self.requests_with_current_proxy += 1
+        if self.should_rotate():
+            self.rotate_proxy()
 
 def create_proxy_auth_extension(proxy_info, worker_id=0):
-    """Create a Chrome extension for proxy without authentication"""
+    """Create a Chrome extension for proxy authentication - Solution from GitHub issue #83"""
+    
     if not proxy_info:
         print(f"[Worker {worker_id}] No proxy info provided - creating extension without proxy")
         return None
-
+    
     # Create proxy_files directory if it doesn't exist
     proxy_files_dir = os.path.join(BASE_PATH, "proxy_files")
     os.makedirs(proxy_files_dir, exist_ok=True)
@@ -313,19 +395,34 @@ def create_proxy_auth_extension(proxy_info, worker_id=0):
 
     background_js = """
     var config = {
-        mode: "fixed_servers",
-        rules: {
-            singleProxy: {
-                scheme: "http",
-                host: "127.0.0.1",
-                port: 3128
-            },
-            bypassList: ["localhost"]
-        }
-    };
+            mode: "fixed_servers",
+            rules: {
+              singleProxy: {
+                scheme: "https",
+                host: "%s",
+                port: parseInt(%s)
+              },
+              bypassList: ["localhost"]
+            }
+          };
 
     chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
-    """
+
+    function callbackFn(details) {
+        return {
+            authCredentials: {
+                username: "%s",
+                password: "%s"
+            }
+        };
+    }
+
+    chrome.webRequest.onAuthRequired.addListener(
+                callbackFn,
+                {urls: ["<all_urls>"]},
+                ['blocking']
+    );
+    """ % (proxy_info['host'], proxy_info['port'], proxy_info['username'], proxy_info['password'])
 
     # Create directory if it doesn't exist
     if not os.path.exists(directory_name):
@@ -341,9 +438,8 @@ def create_proxy_auth_extension(proxy_info, worker_id=0):
     with open(background_path, 'w') as background_file:
         background_file.write(background_js)
     
-    print(f"[Worker {worker_id}] 🌐 Proxy auth extension created with proxy 127.0.0.1:3128")
+    print(f"[Worker {worker_id}] 🌐 Proxy auth extension created with proxy {proxy_info['host']}:{proxy_info['port']}")
     return directory_name
-
 
 def read_phone_numbers(config):
     """Read phone numbers from a text file, one per line"""
@@ -806,6 +902,7 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, delay
         return False, None
 
 def process_phone_batch(phone_batch, worker_id, config, delays):
+    """Process a batch of phone numbers in a single worker with dynamic delays"""
     print(f"[Worker {worker_id}] Starting to process {len(phone_batch)} phone numbers")
     print(f"[Worker {worker_id}] Using delays: Base={delays['base_delay']:.1f}s, Random=±{delays['randomization']:.1f}s")
     
@@ -833,47 +930,62 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
         current_proxy = proxy_rotator.get_current_proxy()
         extension_dir = create_proxy_auth_extension(current_proxy, worker_id)
     else:
-        print(f"[Worker {worker_id}] No rotating proxies available - using Squid proxy")
+        print(f"[Worker {worker_id}] No rotating proxies available - running without proxy")
     
     # Configure Chrome options for this worker with realistic stealth settings
     co = ChromiumOptions()
     co.auto_port()  # Automatically assign a free port
-    co.set_user_data_path(os.path.join(BASE_PATH, f"user_data_worker_{worker_id}"))  # Unique user data path per worker
     
-    # Handle headless mode for Linux
+    # Handle headless mode vs virtual display on Linux
     if config['browser']['headless']:
         co.headless(True)
-        co.set_argument('--headless=new')  # Use new headless mode for Linux
-        print(f"[Worker {worker_id}] 🕶️ Running in headless mode (new)")
+        print(f"[Worker {worker_id}] 🕶️ Running in headless mode")
     else:
-        # Ensure virtual display for Linux
+        # Check if we're on Linux and set up for virtual display
         if platform.system() == "Linux":
+            # Ensure DISPLAY is set for virtual display
             import os
             if not os.environ.get('DISPLAY'):
                 os.environ['DISPLAY'] = ':99'
                 print(f"[Worker {worker_id}] 🖥️ Set DISPLAY to :99 for virtual display")
+            print(f"[Worker {worker_id}] 🖥️ Running with virtual display (non-headless)")
+        else:
+            print(f"[Worker {worker_id}] 🖥️ Running with real display (non-headless)")
         co.headless(False)
-        print(f"[Worker {worker_id}] 🖥️ Running with display (non-headless)")
     
     # Add proxy extension if available
     if extension_dir:
         co.add_extension(extension_dir)
     
-    # Realistic window dimensions
+    # Realistic window dimensions (vary per worker for fingerprint diversity)
+    window_sizes = [
+        '1920,1080', '1366,768', '1536,864', '1440,900', '1600,900', 
+        '1280,720', '1680,1050', '1920,1200', '1024,768', '1280,800'
+    ]
     selected_size = window_sizes[worker_id % len(window_sizes)]
     co.set_argument(f'--window-size={selected_size}')
     
-    # Realistic user agent
+    # Realistic user agents (rotate based on worker_id)
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+    ]
     selected_ua = user_agents[worker_id % len(user_agents)]
     co.set_argument(f'--user-agent={selected_ua}')
     
-    # Essential Linux-specific arguments
-    co.set_argument('--no-sandbox')  # Required for Linux
-    co.set_argument('--disable-dev-shm-usage')  # Prevent shared memory issues
-    co.set_argument('--disable-gpu')  # Disable GPU for headless
-    co.set_argument('--disable-blink-features=AutomationControlled')  # Anti-detection
+    # Essential stealth arguments
+    co.set_argument('--no-sandbox')
+    co.set_argument('--disable-dev-shm-usage')
+    co.set_argument('--disable-gpu')
+    co.set_argument('--disable-blink-features=AutomationControlled')
     co.set_argument('--disable-web-security')
     co.set_argument('--disable-features=VizDisplayCompositor')
+    
+    # Anti-detection arguments
     co.set_argument('--exclude-switches=enable-automation')
     co.set_argument('--disable-extensions-file-access-check')
     co.set_argument('--disable-plugins-discovery')
@@ -893,33 +1005,37 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
     co.set_argument('--no-first-run')
     co.set_argument('--no-default-browser-check')
     co.set_argument('--use-mock-keychain')
+    
+    # Memory and performance optimizations
     co.set_argument('--memory-pressure-off')
     co.set_argument('--max_old_space_size=4096')
     co.set_argument('--disable-background-networking')
     co.set_argument('--disable-client-side-phishing-detection')
     co.set_argument('--disable-component-update')
     co.set_argument('--disable-domain-reliability')
+    
+    # Language and locale settings for German site
     co.set_argument('--lang=de-DE')
     co.set_argument('--accept-lang=de-DE,de;q=0.9,en;q=0.8')
     
     # Additional Linux-specific arguments
-    if platform.system() == "Linux":
+    if platform.system() != "Windows":
         co.set_argument('--disable-setuid-sandbox')
+        co.set_argument('--single-process')
         co.set_argument('--no-zygote')
         if extension_dir:
             co.set_argument('--disable-extensions-except=' + extension_dir)
 
-    # Initialize browser
-    try:
-        browser = Chromium(addr_or_opts=co)
-        dp = browser.latest_tab
-    except Exception as e:
-        print(f"[Worker {worker_id}] Failed to initialize browser: {e}")
-        return []
+    # Initialize browser for this worker
+    browser = Chromium(addr_or_opts=co)
+    dp = browser.latest_tab
 
-    # Apply stealth scripts (unchanged from original)
+    # Add comprehensive stealth scripts for maximum realism
     try:
+        # Core WebDriver detection removal
         dp.run_js("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+        
+        # Enhanced plugin and language spoofing
         dp.run_js("""
             Object.defineProperty(navigator, 'plugins', {
                 get: () => [
@@ -930,6 +1046,8 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 ]
             });
         """)
+        
+        # Language and timezone spoofing for German locale
         dp.run_js("""
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['de-DE', 'de', 'en-US', 'en']
@@ -938,6 +1056,8 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 get: () => 'de-DE'
             });
         """)
+        
+        # Hardware spoofing
         dp.run_js("""
             Object.defineProperty(navigator, 'hardwareConcurrency', {
                 get: () => Math.floor(Math.random() * 8) + 4
@@ -946,6 +1066,8 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 get: () => [2, 4, 8, 16][Math.floor(Math.random() * 4)]
             });
         """)
+        
+        # Screen and viewport spoofing
         selected_size_parts = selected_size.split(',')
         width, height = int(selected_size_parts[0]), int(selected_size_parts[1])
         dp.run_js(f"""
@@ -954,6 +1076,8 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
             Object.defineProperty(screen, 'availWidth', {{ get: () => {width} }});
             Object.defineProperty(screen, 'availHeight', {{ get: () => {height - 40} }});
         """)
+        
+        # WebGL and Canvas fingerprint randomization
         dp.run_js("""
             const getParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function(parameter) {
@@ -966,6 +1090,8 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 return getParameter.apply(this, arguments);
             };
         """)
+        
+        # Permission spoofing
         dp.run_js("""
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => (
@@ -974,6 +1100,8 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 originalQuery(parameters)
             );
         """)
+        
+        # Chrome runtime spoofing
         dp.run_js("""
             if (!window.chrome) {
                 window.chrome = {};
@@ -985,47 +1113,65 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 };
             }
         """)
-        dp.run_js("""
+        
+        # Add realistic timing for human behavior
+        dp.run_js(f"""
+            // Simulate real user timing variability
             const originalSetTimeout = window.setTimeout;
-            window.setTimeout = function(callback, delay) {
-                const variance = Math.random() * 100 - 50;
+            window.setTimeout = function(callback, delay) {{
+                const variance = Math.random() * 100 - 50; // ±50ms variance
                 return originalSetTimeout(callback, delay + variance);
-            };
+            }};
         """)
+        
         print(f"[Worker {worker_id}] 🕵️ Advanced stealth scripts applied successfully")
     except Exception as e:
         print(f"[Worker {worker_id}] ⚠️ Warning: Could not apply some stealth scripts: {e}")
 
-    # Rest of the function remains unchanged
+    # Results for this worker
     worker_results = []
+    
+    # Process each phone number in the batch
     for index, phone_number in enumerate(phone_batch):
+        # Check if we need to rotate proxy
         if proxy_rotator and proxy_rotator.should_rotate() and index > 0:
-            print(f"[Worker {worker_id}] Rotating proxy after 5 seconds...")
+            print(f"[Worker {worker_id}] Rotating proxy for next batch of requests...")
+            
+            # Close current browser
             try:
                 browser.quit()
             except:
                 pass
+            
+            # Get new proxy and create new extension
             proxy_rotator.rotate_proxy()
             current_proxy = proxy_rotator.get_current_proxy()
             extension_dir = create_proxy_auth_extension(current_proxy, worker_id)
-            # Reinitialize browser with same settings as before
+            
+            # Reconfigure browser with new proxy and enhanced stealth
             co = ChromiumOptions()
             co.auto_port()
-            co.set_user_data_path(os.path.join(BASE_PATH, f"user_data_worker_{worker_id}"))
+            
+            # Handle headless mode vs virtual display on Linux for proxy rotation
             if config['browser']['headless']:
                 co.headless(True)
-                co.set_argument('--headless=new')
             else:
                 if platform.system() == "Linux":
                     import os
                     if not os.environ.get('DISPLAY'):
                         os.environ['DISPLAY'] = ':99'
                 co.headless(False)
+                
             if extension_dir:
                 co.add_extension(extension_dir)
-            # Apply all other Chrome options (unchanged from previous response)
+            
+            # Maintain same realistic settings as initial browser
+            selected_size = window_sizes[worker_id % len(window_sizes)]
+            selected_ua = user_agents[worker_id % len(user_agents)]
             co.set_argument(f'--window-size={selected_size}')
             co.set_argument(f'--user-agent={selected_ua}')
+            
+            # Essential stealth arguments
             co.set_argument('--no-sandbox')
             co.set_argument('--disable-dev-shm-usage')
             co.set_argument('--disable-gpu')
@@ -1059,51 +1205,114 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
             co.set_argument('--disable-domain-reliability')
             co.set_argument('--lang=de-DE')
             co.set_argument('--accept-lang=de-DE,de;q=0.9,en;q=0.8')
-            if platform.system() == "Linux":
+            
+            if platform.system() != "Windows":
                 co.set_argument('--disable-setuid-sandbox')
+                co.set_argument('--single-process')
                 co.set_argument('--no-zygote')
                 if extension_dir:
                     co.set_argument('--disable-extensions-except=' + extension_dir)
+            
+            # Initialize new browser
+            browser = Chromium(addr_or_opts=co)
+            dp = browser.latest_tab
+            
+            # Reapply comprehensive stealth scripts to new browser instance
             try:
-                browser = Chromium(addr_or_opts=co)
-                dp = browser.latest_tab
-                # Reapply stealth scripts (unchanged)
                 dp.run_js("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-                # ... (other stealth scripts as in previous response)
-                print(f"[Worker {worker_id}] 🔄 Browser reinitialized after proxy rotation")
+                dp.run_js("""
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [
+                            {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+                            {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
+                            {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
+                            {name: 'WebKit built-in PDF', filename: 'webkit-pdf-plugin', description: 'Portable Document Format'}
+                        ]
+                    });
+                """)
+                dp.run_js("""
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['de-DE', 'de', 'en-US', 'en']
+                    });
+                    Object.defineProperty(navigator, 'language', {
+                        get: () => 'de-DE'
+                    });
+                """)
+                dp.run_js("""
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {
+                        get: () => Math.floor(Math.random() * 8) + 4
+                    });
+                    Object.defineProperty(navigator, 'deviceMemory', {
+                        get: () => [2, 4, 8, 16][Math.floor(Math.random() * 4)]
+                    });
+                """)
+                selected_size_parts = selected_size.split(',')
+                width, height = int(selected_size_parts[0]), int(selected_size_parts[1])
+                dp.run_js(f"""
+                    Object.defineProperty(screen, 'width', {{ get: () => {width} }});
+                    Object.defineProperty(screen, 'height', {{ get: () => {height} }});
+                    Object.defineProperty(screen, 'availWidth', {{ get: () => {width} }});
+                    Object.defineProperty(screen, 'availHeight', {{ get: () => {height - 40} }});
+                """)
+                print(f"[Worker {worker_id}] 🔄 Stealth scripts reapplied after proxy rotation")
             except Exception as e:
-                print(f"[Worker {worker_id}] Failed to reinitialize browser: {e}")
-                return worker_results
-        # Rest of the loop (unchanged)
-
-
-
-
-
+                print(f"[Worker {worker_id}] ⚠️ Warning: Could not reapply stealth scripts: {e}")
+        
+        is_first_load = (index == 0) or (proxy_rotator and proxy_rotator.requests_with_current_proxy == 0)
+        phone_index = f"W{worker_id}-{index+1}"
+        
+        success, status = process_phone_number(dp, phone_number, phone_index, config, worker_id, delays, is_first_load)
+        
+        # Increment proxy request count
+        if proxy_rotator:
+            proxy_rotator.increment_request_count()
+        
+        result = {
+            'phone_number': phone_number,
+            'success': success,
+            'status': status,
+            'worker_id': worker_id,
+            'index': index
+        }
+        worker_results.append(result)
+        
+        # Save result to file immediately (real-time saving)
+        save_result_to_file(result, config)
+        
+        # Add dynamic delay between numbers based on dataset size
+        if index < len(phone_batch) - 1:
+            between_phones_delay = get_random_delay(delays['base_delay'], delays['randomization'])
+            print(f"[Worker {worker_id}] Waiting {between_phones_delay:.1f}s before processing next number (human behavior)...")
+            time.sleep(between_phones_delay)
     
+    # Close browser
     try:
         browser.quit()
         print(f"[Worker {worker_id}] Browser closed successfully")
     except Exception as e:
         print(f"[Worker {worker_id}] Error closing browser: {e}")
     
+    # Clean up proxy extension directory
     if extension_dir and os.path.exists(extension_dir):
         try:
             import shutil
             shutil.rmtree(extension_dir)
             print(f"[Worker {worker_id}] Cleaned up proxy extension directory: {os.path.basename(extension_dir)}")
+            
+            # Try to remove proxy_files directory if empty
             proxy_files_dir = os.path.join(BASE_PATH, "proxy_files")
             try:
                 if os.path.exists(proxy_files_dir) and not os.listdir(proxy_files_dir):
                     os.rmdir(proxy_files_dir)
                     print(f"[Worker {worker_id}] Removed empty proxy_files directory")
             except:
-                pass
+                pass  # Directory not empty or other issue, ignore
         except Exception as e:
             print(f"[Worker {worker_id}] Could not clean up extension directory: {e}")
     
     print(f"[Worker {worker_id}] Completed processing {len(phone_batch)} phone numbers")
     return worker_results
+
 # Thread-safe file writing
 file_lock = threading.Lock()
 
@@ -1298,8 +1507,10 @@ def main():
     
     else:
         print("\n🔄 Running in single-process mode...")
-        # Process all phone numbers in a single batch
-        process_phone_batch(phone_numbers, 0, config, delays)
+        # Single process mode (original logic)
+        # This would use the original main logic but adapted for the config system
+        print("Single-process mode not implemented in this version. Please enable multiprocessing in config.json")
+        return
 
     # Print final summary
     print(f"\n🎉 Completed processing all {len(phone_numbers)} phone numbers.")
