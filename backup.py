@@ -362,11 +362,12 @@ class ProxyRotator:
             self.rotate_proxy()
 
 def create_proxy_auth_extension(proxy_info, worker_id=0):
-    """Create a Chrome extension for proxy without authentication"""
+    """Create a Chrome extension for proxy authentication - Solution from GitHub issue #83"""
+    
     if not proxy_info:
         print(f"[Worker {worker_id}] No proxy info provided - creating extension without proxy")
         return None
-
+    
     # Create proxy_files directory if it doesn't exist
     proxy_files_dir = os.path.join(BASE_PATH, "proxy_files")
     os.makedirs(proxy_files_dir, exist_ok=True)
@@ -396,19 +397,34 @@ def create_proxy_auth_extension(proxy_info, worker_id=0):
 
     background_js = """
     var config = {
-        mode: "fixed_servers",
-        rules: {
-            singleProxy: {
-                scheme: "http",
-                host: "127.0.0.1",
-                port: 3128
-            },
-            bypassList: ["localhost"]
-        }
-    };
+            mode: "fixed_servers",
+            rules: {
+              singleProxy: {
+                scheme: "https",
+                host: "%s",
+                port: parseInt(%s)
+              },
+              bypassList: ["localhost"]
+            }
+          };
 
     chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
-    """ 
+
+    function callbackFn(details) {
+        return {
+            authCredentials: {
+                username: "%s",
+                password: "%s"
+            }
+        };
+    }
+
+    chrome.webRequest.onAuthRequired.addListener(
+                callbackFn,
+                {urls: ["<all_urls>"]},
+                ['blocking']
+    );
+    """ % (proxy_info['host'], proxy_info['port'], proxy_info['username'], proxy_info['password'])
 
     # Create directory if it doesn't exist
     if not os.path.exists(directory_name):
@@ -424,9 +440,8 @@ def create_proxy_auth_extension(proxy_info, worker_id=0):
     with open(background_path, 'w') as background_file:
         background_file.write(background_js)
     
-    print(f"[Worker {worker_id}] 🌐 Proxy auth extension created with proxy 127.0.0.1:3128")
+    print(f"[Worker {worker_id}] 🌐 Proxy auth extension created with proxy {proxy_info['host']}:{proxy_info['port']}")
     return directory_name
-
 
 def read_phone_numbers(config):
     """Read phone numbers from a text file, one per line"""
