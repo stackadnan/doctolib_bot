@@ -7,7 +7,7 @@
         "max_worker_limit": 200
     },
     "browser": {
-        "headless": false,
+        "headless": true,
         "timeout": 30,
         "delay_between_phones": 1,
         "human_behavior": false

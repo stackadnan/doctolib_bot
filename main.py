@@ -889,7 +889,6 @@ def process_phone_number(dp, phone_number, phone_index, config, worker_id, delay
         return False, None
 
 def process_phone_batch(phone_batch, worker_id, config, delays):
-    """Process a batch of phone numbers in a single worker with dynamic delays"""
     print(f"[Worker {worker_id}] Starting to process {len(phone_batch)} phone numbers")
     print(f"[Worker {worker_id}] Using delays: Base={delays['base_delay']:.1f}s, Random=±{delays['randomization']:.1f}s")
     
@@ -917,62 +916,47 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
         current_proxy = proxy_rotator.get_current_proxy()
         extension_dir = create_proxy_auth_extension(current_proxy, worker_id)
     else:
-        print(f"[Worker {worker_id}] No rotating proxies available - running without proxy")
+        print(f"[Worker {worker_id}] No rotating proxies available - using Squid proxy")
     
     # Configure Chrome options for this worker with realistic stealth settings
     co = ChromiumOptions()
     co.auto_port()  # Automatically assign a free port
+    co.set_user_data_path(os.path.join(BASE_PATH, f"user_data_worker_{worker_id}"))  # Unique user data path per worker
     
-    # Handle headless mode vs virtual display on Linux
+    # Handle headless mode for Linux
     if config['browser']['headless']:
         co.headless(True)
-        print(f"[Worker {worker_id}] 🕶️ Running in headless mode")
+        co.set_argument('--headless=new')  # Use new headless mode for Linux
+        print(f"[Worker {worker_id}] 🕶️ Running in headless mode (new)")
     else:
-        # Check if we're on Linux and set up for virtual display
+        # Ensure virtual display for Linux
         if platform.system() == "Linux":
-            # Ensure DISPLAY is set for virtual display
             import os
             if not os.environ.get('DISPLAY'):
                 os.environ['DISPLAY'] = ':99'
                 print(f"[Worker {worker_id}] 🖥️ Set DISPLAY to :99 for virtual display")
-            print(f"[Worker {worker_id}] 🖥️ Running with virtual display (non-headless)")
-        else:
-            print(f"[Worker {worker_id}] 🖥️ Running with real display (non-headless)")
         co.headless(False)
+        print(f"[Worker {worker_id}] 🖥️ Running with display (non-headless)")
     
     # Add proxy extension if available
     if extension_dir:
         co.add_extension(extension_dir)
     
-    # Realistic window dimensions (vary per worker for fingerprint diversity)
-    window_sizes = [
-        '1920,1080', '1366,768', '1536,864', '1440,900', '1600,900', 
-        '1280,720', '1680,1050', '1920,1200', '1024,768', '1280,800'
-    ]
+    # Realistic window dimensions
     selected_size = window_sizes[worker_id % len(window_sizes)]
     co.set_argument(f'--window-size={selected_size}')
     
-    # Realistic user agents (rotate based on worker_id)
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
-    ]
+    # Realistic user agent
     selected_ua = user_agents[worker_id % len(user_agents)]
     co.set_argument(f'--user-agent={selected_ua}')
     
-    # Essential stealth arguments
-    co.set_argument('--no-sandbox')
-    co.set_argument('--disable-dev-shm-usage')
-    co.set_argument('--disable-gpu')
-    co.set_argument('--disable-blink-features=AutomationControlled')
+    # Essential Linux-specific arguments
+    co.set_argument('--no-sandbox')  # Required for Linux
+    co.set_argument('--disable-dev-shm-usage')  # Prevent shared memory issues
+    co.set_argument('--disable-gpu')  # Disable GPU for headless
+    co.set_argument('--disable-blink-features=AutomationControlled')  # Anti-detection
     co.set_argument('--disable-web-security')
     co.set_argument('--disable-features=VizDisplayCompositor')
-    
-    # Anti-detection arguments
     co.set_argument('--exclude-switches=enable-automation')
     co.set_argument('--disable-extensions-file-access-check')
     co.set_argument('--disable-plugins-discovery')
@@ -992,37 +976,33 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
     co.set_argument('--no-first-run')
     co.set_argument('--no-default-browser-check')
     co.set_argument('--use-mock-keychain')
-    
-    # Memory and performance optimizations
     co.set_argument('--memory-pressure-off')
     co.set_argument('--max_old_space_size=4096')
     co.set_argument('--disable-background-networking')
     co.set_argument('--disable-client-side-phishing-detection')
     co.set_argument('--disable-component-update')
     co.set_argument('--disable-domain-reliability')
-    
-    # Language and locale settings for German site
     co.set_argument('--lang=de-DE')
     co.set_argument('--accept-lang=de-DE,de;q=0.9,en;q=0.8')
     
     # Additional Linux-specific arguments
-    if platform.system() != "Windows":
+    if platform.system() == "Linux":
         co.set_argument('--disable-setuid-sandbox')
-        co.set_argument('--single-process')
         co.set_argument('--no-zygote')
         if extension_dir:
             co.set_argument('--disable-extensions-except=' + extension_dir)
 
-    # Initialize browser for this worker
-    browser = Chromium(addr_or_opts=co)
-    dp = browser.latest_tab
-
-    # Add comprehensive stealth scripts for maximum realism
+    # Initialize browser
     try:
-        # Core WebDriver detection removal
+        browser = Chromium(addr_or_opts=co)
+        dp = browser.latest_tab
+    except Exception as e:
+        print(f"[Worker {worker_id}] Failed to initialize browser: {e}")
+        return []
+
+    # Apply stealth scripts (unchanged from original)
+    try:
         dp.run_js("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-        
-        # Enhanced plugin and language spoofing
         dp.run_js("""
             Object.defineProperty(navigator, 'plugins', {
                 get: () => [
@@ -1033,8 +1013,6 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 ]
             });
         """)
-        
-        # Language and timezone spoofing for German locale
         dp.run_js("""
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['de-DE', 'de', 'en-US', 'en']
@@ -1043,8 +1021,6 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 get: () => 'de-DE'
             });
         """)
-        
-        # Hardware spoofing
         dp.run_js("""
             Object.defineProperty(navigator, 'hardwareConcurrency', {
                 get: () => Math.floor(Math.random() * 8) + 4
@@ -1053,8 +1029,6 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 get: () => [2, 4, 8, 16][Math.floor(Math.random() * 4)]
             });
         """)
-        
-        # Screen and viewport spoofing
         selected_size_parts = selected_size.split(',')
         width, height = int(selected_size_parts[0]), int(selected_size_parts[1])
         dp.run_js(f"""
@@ -1063,8 +1037,6 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
             Object.defineProperty(screen, 'availWidth', {{ get: () => {width} }});
             Object.defineProperty(screen, 'availHeight', {{ get: () => {height - 40} }});
         """)
-        
-        # WebGL and Canvas fingerprint randomization
         dp.run_js("""
             const getParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function(parameter) {
@@ -1077,8 +1049,6 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 return getParameter.apply(this, arguments);
             };
         """)
-        
-        # Permission spoofing
         dp.run_js("""
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => (
@@ -1087,8 +1057,6 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 originalQuery(parameters)
             );
         """)
-        
-        # Chrome runtime spoofing
         dp.run_js("""
             if (!window.chrome) {
                 window.chrome = {};
@@ -1100,65 +1068,48 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 };
             }
         """)
-        
-        # Add realistic timing for human behavior
-        dp.run_js(f"""
-            // Simulate real user timing variability
+        dp.run_js("""
             const originalSetTimeout = window.setTimeout;
-            window.setTimeout = function(callback, delay) {{
-                const variance = Math.random() * 100 - 50; // ±50ms variance
+            window.setTimeout = function(callback, delay) {
+                const variance = Math.random() * 100 - 50;
                 return originalSetTimeout(callback, delay + variance);
-            }};
+            };
         """)
-        
         print(f"[Worker {worker_id}] 🕵️ Advanced stealth scripts applied successfully")
     except Exception as e:
         print(f"[Worker {worker_id}] ⚠️ Warning: Could not apply some stealth scripts: {e}")
 
-    # Results for this worker
+    # Rest of the function remains unchanged
     worker_results = []
-    
-    # Process each phone number in the batch
     for index, phone_number in enumerate(phone_batch):
-        # Check if we need to rotate proxy
+        # Proxy rotation logic (unchanged)
         if proxy_rotator and proxy_rotator.should_rotate() and index > 0:
             print(f"[Worker {worker_id}] Rotating proxy for next batch of requests...")
-            
-            # Close current browser
             try:
                 browser.quit()
             except:
                 pass
-            
-            # Get new proxy and create new extension
             proxy_rotator.rotate_proxy()
             current_proxy = proxy_rotator.get_current_proxy()
             extension_dir = create_proxy_auth_extension(current_proxy, worker_id)
-            
-            # Reconfigure browser with new proxy and enhanced stealth
             co = ChromiumOptions()
             co.auto_port()
-            
-            # Handle headless mode vs virtual display on Linux for proxy rotation
+            co.set_user_data_path(os.path.join(BASE_PATH, f"user_data_worker_{worker_id}"))
             if config['browser']['headless']:
                 co.headless(True)
+                co.set_argument('--headless=new')
             else:
                 if platform.system() == "Linux":
                     import os
                     if not os.environ.get('DISPLAY'):
                         os.environ['DISPLAY'] = ':99'
                 co.headless(False)
-                
             if extension_dir:
                 co.add_extension(extension_dir)
-            
-            # Maintain same realistic settings as initial browser
             selected_size = window_sizes[worker_id % len(window_sizes)]
             selected_ua = user_agents[worker_id % len(user_agents)]
             co.set_argument(f'--window-size={selected_size}')
             co.set_argument(f'--user-agent={selected_ua}')
-            
-            # Essential stealth arguments
             co.set_argument('--no-sandbox')
             co.set_argument('--disable-dev-shm-usage')
             co.set_argument('--disable-gpu')
@@ -1192,20 +1143,15 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
             co.set_argument('--disable-domain-reliability')
             co.set_argument('--lang=de-DE')
             co.set_argument('--accept-lang=de-DE,de;q=0.9,en;q=0.8')
-            
-            if platform.system() != "Windows":
+            if platform.system() == "Linux":
                 co.set_argument('--disable-setuid-sandbox')
-                co.set_argument('--single-process')
                 co.set_argument('--no-zygote')
                 if extension_dir:
                     co.set_argument('--disable-extensions-except=' + extension_dir)
-            
-            # Initialize new browser
-            browser = Chromium(addr_or_opts=co)
-            dp = browser.latest_tab
-            
-            # Reapply comprehensive stealth scripts to new browser instance
             try:
+                browser = Chromium(addr_or_opts=co)
+                dp = browser.latest_tab
+                # Reapply stealth scripts (unchanged)
                 dp.run_js("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
                 dp.run_js("""
                     Object.defineProperty(navigator, 'plugins', {
@@ -1243,14 +1189,14 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
                 """)
                 print(f"[Worker {worker_id}] 🔄 Stealth scripts reapplied after proxy rotation")
             except Exception as e:
-                print(f"[Worker {worker_id}] ⚠️ Warning: Could not reapply stealth scripts: {e}")
+                print(f"[Worker {worker_id}] Failed to initialize browser after proxy rotation: {e}")
+                return worker_results
         
         is_first_load = (index == 0) or (proxy_rotator and proxy_rotator.requests_with_current_proxy == 0)
         phone_index = f"W{worker_id}-{index+1}"
         
         success, status = process_phone_number(dp, phone_number, phone_index, config, worker_id, delays, is_first_load)
         
-        # Increment proxy request count
         if proxy_rotator:
             proxy_rotator.increment_request_count()
         
@@ -1263,43 +1209,36 @@ def process_phone_batch(phone_batch, worker_id, config, delays):
         }
         worker_results.append(result)
         
-        # Save result to file immediately (real-time saving)
         save_result_to_file(result, config)
         
-        # Add dynamic delay between numbers based on dataset size
         if index < len(phone_batch) - 1:
             between_phones_delay = get_random_delay(delays['base_delay'], delays['randomization'])
             print(f"[Worker {worker_id}] Waiting {between_phones_delay:.1f}s before processing next number (human behavior)...")
             time.sleep(between_phones_delay)
     
-    # Close browser
     try:
         browser.quit()
         print(f"[Worker {worker_id}] Browser closed successfully")
     except Exception as e:
         print(f"[Worker {worker_id}] Error closing browser: {e}")
     
-    # Clean up proxy extension directory
     if extension_dir and os.path.exists(extension_dir):
         try:
             import shutil
             shutil.rmtree(extension_dir)
             print(f"[Worker {worker_id}] Cleaned up proxy extension directory: {os.path.basename(extension_dir)}")
-            
-            # Try to remove proxy_files directory if empty
             proxy_files_dir = os.path.join(BASE_PATH, "proxy_files")
             try:
                 if os.path.exists(proxy_files_dir) and not os.listdir(proxy_files_dir):
                     os.rmdir(proxy_files_dir)
                     print(f"[Worker {worker_id}] Removed empty proxy_files directory")
             except:
-                pass  # Directory not empty or other issue, ignore
+                pass
         except Exception as e:
             print(f"[Worker {worker_id}] Could not clean up extension directory: {e}")
     
     print(f"[Worker {worker_id}] Completed processing {len(phone_batch)} phone numbers")
     return worker_results
-
 # Thread-safe file writing
 file_lock = threading.Lock()
 
